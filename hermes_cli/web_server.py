@@ -2890,6 +2890,20 @@ _event_channels: dict[str, set] = {}
 _event_lock = asyncio.Lock()
 
 
+def _remote_chat_ws_allowed() -> bool:
+    """Allow remote dashboard Chat WebSockets only when explicitly enabled."""
+    return os.environ.get("HERMES_DASHBOARD_ALLOW_REMOTE_CHAT_WS") == "1"
+
+
+async def _close_if_forbidden_chat_ws(ws: WebSocket) -> bool:
+    client_host = ws.client.host if ws.client else ""
+    if client_host and client_host not in _LOOPBACK_HOSTS and not _remote_chat_ws_allowed():
+        await ws.close(code=4403)
+        return True
+
+    return False
+
+
 def _resolve_chat_argv(
     resume: Optional[str] = None,
     sidecar_url: Optional[str] = None,
@@ -2972,9 +2986,7 @@ async def pty_ws(ws: WebSocket) -> None:
         await ws.close(code=4401)
         return
 
-    client_host = ws.client.host if ws.client else ""
-    if client_host and client_host not in _LOOPBACK_HOSTS:
-        await ws.close(code=4403)
+    if await _close_if_forbidden_chat_ws(ws):
         return
 
     await ws.accept()
@@ -3080,9 +3092,7 @@ async def gateway_ws(ws: WebSocket) -> None:
         await ws.close(code=4401)
         return
 
-    client_host = ws.client.host if ws.client else ""
-    if client_host and client_host not in _LOOPBACK_HOSTS:
-        await ws.close(code=4403)
+    if await _close_if_forbidden_chat_ws(ws):
         return
 
     from tui_gateway.ws import handle_ws
@@ -3113,9 +3123,7 @@ async def pub_ws(ws: WebSocket) -> None:
         await ws.close(code=4401)
         return
 
-    client_host = ws.client.host if ws.client else ""
-    if client_host and client_host not in _LOOPBACK_HOSTS:
-        await ws.close(code=4403)
+    if await _close_if_forbidden_chat_ws(ws):
         return
 
     channel = _channel_or_close_code(ws)
@@ -3143,9 +3151,7 @@ async def events_ws(ws: WebSocket) -> None:
         await ws.close(code=4401)
         return
 
-    client_host = ws.client.host if ws.client else ""
-    if client_host and client_host not in _LOOPBACK_HOSTS:
-        await ws.close(code=4403)
+    if await _close_if_forbidden_chat_ws(ws):
         return
 
     channel = _channel_or_close_code(ws)
