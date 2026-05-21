@@ -15,6 +15,7 @@ Exposes an HTTP server with endpoints:
 - POST /v1/runs/{run_id}/stop       — interrupt a running agent
 - GET  /health                     — health check
 - GET  /health/detailed            — rich status for cross-container dashboard probing
+- GET  /runtime/liveness           — profile runtime liveness for control-plane health aggregation
 
 Any OpenAI-compatible frontend (Open WebUI, LobeChat, LibreChat,
 AnythingLLM, NextChat, ChatBox, etc.) can connect to hermes-agent
@@ -50,6 +51,8 @@ from gateway.platforms.base import (
     SendResult,
     is_network_accessible,
 )
+from hermes_constants import get_hermes_home
+from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -635,6 +638,18 @@ class APIServerAdapter(BasePlatformAdapter):
         # in-flight run by run_id.
         self._run_approval_sessions: Dict[str, str] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
+        self._profile_goal_runtime_enabled: bool = self._resolve_goal_runtime_enabled(extra)
+        self._profile_goal_runtime_interval_seconds: int = self._resolve_goal_runtime_interval_seconds(extra)
+        self._profile_goal_runtime_task: Optional["asyncio.Task"] = None
+        self._profile_goal_runtime_last_tick_at: Optional[float] = None
+        self._profile_goal_runtime_last_tick_count: Optional[int] = None
+        self._profile_goal_runtime_last_sync: Dict[str, int] = {
+            "loaded": 0,
+            "created": 0,
+            "updated": 0,
+            "skipped": 0,
+        }
+        self._profile_goal_runtime_last_error: Optional[str] = None
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -670,6 +685,36 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception:
             pass
         return "hermes-agent"
+
+    @staticmethod
+    def _resolve_goal_runtime_enabled(extra: Dict[str, Any]) -> bool:
+        value = extra.get("goal_runtime_enabled")
+        if value is None:
+            value = os.getenv("HERMES_PROFILE_GOAL_RUNTIME_ENABLED")
+        return is_truthy_value(value, default=False)
+
+    @staticmethod
+    def _resolve_goal_runtime_interval_seconds(extra: Dict[str, Any]) -> int:
+        value = extra.get("goal_runtime_interval_seconds")
+        if value is None:
+            value = os.getenv("HERMES_PROFILE_GOAL_RUNTIME_INTERVAL_SECONDS", "60")
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            parsed = 60
+        return max(5, parsed)
+
+    @staticmethod
+    def _active_profile_info() -> Dict[str, Any]:
+        home = get_hermes_home()
+        name = "default"
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+            name = get_active_profile_name() or "default"
+        except Exception:
+            if home.parent.name == "profiles":
+                name = home.name
+        return {"name": name, "home": str(home)}
 
     def _cors_headers_for_origin(self, origin: str) -> Optional[Dict[str, str]]:
         """Return CORS headers for an allowed browser origin."""
@@ -905,6 +950,40 @@ class APIServerAdapter(BasePlatformAdapter):
             "updated_at": runtime.get("updated_at"),
             "pid": os.getpid(),
         })
+
+    async def _handle_runtime_liveness(self, request: "web.Request") -> "web.Response":
+        """GET /runtime/liveness — profile-scoped runtime liveness.
+
+        This endpoint is intentionally unauthenticated like /health. It does
+        not expose secrets; it reports whether the opt-in profile goal loop is
+        enabled/running so FUXI can aggregate health without driving the loop.
+        """
+        task = self._profile_goal_runtime_task
+        goal_loop_running = bool(task and not task.done())
+        status = "ok"
+        if self._profile_goal_runtime_enabled and not goal_loop_running:
+            status = "degraded"
+        if self._profile_goal_runtime_last_error:
+            status = "degraded"
+
+        return web.json_response(
+            {
+                "status": status,
+                "runtime": "api_server",
+                "platform": "hermes-agent",
+                "profile": self._active_profile_info(),
+                "pid": os.getpid(),
+                "goal_loop": {
+                    "enabled": self._profile_goal_runtime_enabled,
+                    "running": goal_loop_running,
+                    "interval_seconds": self._profile_goal_runtime_interval_seconds,
+                    "last_tick_at": self._profile_goal_runtime_last_tick_at,
+                    "last_tick_count": self._profile_goal_runtime_last_tick_count,
+                    "last_sync": self._profile_goal_runtime_last_sync,
+                    "last_error": self._profile_goal_runtime_last_error,
+                },
+            }
+        )
 
     async def _handle_models(self, request: "web.Request") -> "web.Response":
         """GET /v1/models — return hermes-agent as an available model."""
@@ -3346,6 +3425,25 @@ class APIServerAdapter(BasePlatformAdapter):
             for run_id in stale_statuses:
                 self._run_statuses.pop(run_id, None)
 
+    async def _run_profile_goal_runtime_loop(self) -> None:
+        """Tick the active profile's cron specs while this API runtime is alive."""
+        from cron.profile_goal_runtime import sync_profile_goal_cron_specs
+        from cron.scheduler import tick as cron_tick
+
+        while True:
+            try:
+                self._profile_goal_runtime_last_sync = sync_profile_goal_cron_specs()
+                count = await asyncio.to_thread(cron_tick, verbose=False)
+                self._profile_goal_runtime_last_tick_at = time.time()
+                self._profile_goal_runtime_last_tick_count = count
+                self._profile_goal_runtime_last_error = None
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._profile_goal_runtime_last_error = str(exc)
+                logger.warning("[%s] profile goal runtime tick failed: %s", self.name, exc)
+            await asyncio.sleep(self._profile_goal_runtime_interval_seconds)
+
     # ------------------------------------------------------------------
     # BasePlatformAdapter interface
     # ------------------------------------------------------------------
@@ -3362,6 +3460,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app["api_server_adapter"] = self
             self._app.router.add_get("/health", self._handle_health)
             self._app.router.add_get("/health/detailed", self._handle_health_detailed)
+            self._app.router.add_get("/runtime/liveness", self._handle_runtime_liveness)
             self._app.router.add_get("/v1/health", self._handle_health)
             self._app.router.add_get("/v1/models", self._handle_models)
             self._app.router.add_get("/v1/capabilities", self._handle_capabilities)
@@ -3384,14 +3483,6 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
             self._app.router.add_post("/v1/runs/{run_id}/approval", self._handle_run_approval)
             self._app.router.add_post("/v1/runs/{run_id}/stop", self._handle_stop_run)
-            # Start background sweep to clean up orphaned (unconsumed) run streams
-            sweep_task = asyncio.create_task(self._sweep_orphaned_runs())
-            try:
-                self._background_tasks.add(sweep_task)
-            except TypeError:
-                pass
-            if hasattr(sweep_task, "add_done_callback"):
-                sweep_task.add_done_callback(self._background_tasks.discard)
 
             # Refuse to start network-accessible without authentication
             if is_network_accessible(self._host) and not self._api_key:
@@ -3433,6 +3524,25 @@ class APIServerAdapter(BasePlatformAdapter):
             await self._runner.setup()
             self._site = web.TCPSite(self._runner, self._host, self._port)
             await self._site.start()
+            # Start background work only after the HTTP listener is alive.
+            # This prevents an opt-in goal runtime from self-running when
+            # startup later fails due to auth, port, or runner setup errors.
+            sweep_task = asyncio.create_task(self._sweep_orphaned_runs())
+            try:
+                self._background_tasks.add(sweep_task)
+            except TypeError:
+                pass
+            if hasattr(sweep_task, "add_done_callback"):
+                sweep_task.add_done_callback(self._background_tasks.discard)
+            if self._profile_goal_runtime_enabled:
+                goal_task = asyncio.create_task(self._run_profile_goal_runtime_loop())
+                self._profile_goal_runtime_task = goal_task
+                try:
+                    self._background_tasks.add(goal_task)
+                except TypeError:
+                    pass
+                if hasattr(goal_task, "add_done_callback"):
+                    goal_task.add_done_callback(self._background_tasks.discard)
 
             self._mark_connected()
             if not self._api_key:
@@ -3456,6 +3566,15 @@ class APIServerAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Stop the aiohttp web server."""
         self._mark_disconnected()
+        if self._profile_goal_runtime_task:
+            task = self._profile_goal_runtime_task
+            task.cancel()
+            if hasattr(task, "__await__"):
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            self._profile_goal_runtime_task = None
         if self._site:
             await self._site.stop()
             self._site = None

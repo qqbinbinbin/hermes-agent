@@ -56,6 +56,8 @@ _HERMES_CORE_TOOLS = [
     "execute_code", "delegate_task",
     # Cronjob management
     "cronjob",
+    # Profile contract calls; check_fn keeps it disabled unless explicitly enabled.
+    "fuxi_contract_call",
     # Cross-platform messaging (gated on gateway running via check_fn)
     "send_message",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
@@ -297,6 +299,16 @@ TOOLSETS = {
         "includes": []
     },
 
+    "fuxi_contract": {
+        "description": (
+            "Opt-in FUXI contract tool calls for profile goal runtimes. "
+            "Disabled unless HERMES_PROFILE_CONTRACT_TOOLS_ENABLED=1 and "
+            "FUXI_CONTRACT_BASE_URL/FUXI_CONTRACT_JWT are configured."
+        ),
+        "tools": ["fuxi_contract_call"],
+        "includes": []
+    },
+
     "spotify": {
         "description": "Native Spotify playback, search, playlist, album, and library tools",
         "tools": [
@@ -373,6 +385,8 @@ TOOLSETS = {
             "execute_code", "delegate_task",
             # Cronjob management
             "cronjob",
+            # Profile contract calls (check_fn keeps this absent unless explicitly enabled)
+            "fuxi_contract_call",
             # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
             "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
 

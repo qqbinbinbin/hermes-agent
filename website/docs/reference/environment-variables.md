@@ -491,6 +491,15 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 | `HERMES_WECOM_TEXT_BATCH_DELAY_SECONDS` / `_SPLIT_DELAY_SECONDS` | WeCom batcher tuning. |
 | `HERMES_VISION_DOWNLOAD_TIMEOUT` | Timeout in seconds for downloading an image before handing it to vision models (default: `30`). |
 | `HERMES_RESTART_DRAIN_TIMEOUT` | Gateway: seconds to wait for active runs to drain on `/restart` before forcing the restart (default: `900`). |
+| `HERMES_PROFILE_GOAL_RUNTIME_ENABLED` | Enable the API-server profile goal runtime (`1`/`true`/`yes`/`on`). Default is off; ordinary profile runtimes do not self-run. |
+| `HERMES_PROFILE_GOAL_RUNTIME_INTERVAL_SECONDS` | Scheduler tick interval for the profile goal runtime in seconds (default `60`, minimum `5`). |
+| `HERMES_PROFILE_CONTRACT_TOOLS_ENABLED` | Expose the opt-in `fuxi_contract_call` tool for a profile goal runtime. Default is off. |
+| `FUXI_CONTRACT_BASE_URL` | HTTPS base URL for FUXI/Supabase Edge Function contract calls, for example `https://example.supabase.co/functions/v1`. Required when `HERMES_PROFILE_CONTRACT_TOOLS_ENABLED=1`. |
+| `FUXI_CONTRACT_ENDPOINT` | Edge Function path appended to `FUXI_CONTRACT_BASE_URL` for contract calls (default: `fuxi-contract-tools`). |
+| `FUXI_CONTRACT_JWT` | Bearer JWT used by `fuxi_contract_call`. Prefer a profile-scoped service token with the minimum contract permissions. |
+| `FUXI_CONTRACT_BEARER_TOKEN` | Alias token source for `fuxi_contract_call`; used when `FUXI_CONTRACT_JWT` is unset. |
+| `FUXI_CONTRACT_TOOL_ALLOWLIST` | Comma-separated override for allowed contract tool names. Defaults to the built-in `fuxi.director.*`, `fuxi.knowledge.query`, `fuxi.data.query`, `fuxi.ontology.query`, `fuxi.skill.query`, `fuxi.workforce.task.create`, and `fuxi.workforce.release.request` set. |
+| `FUXI_CONTRACT_TIMEOUT_SECONDS` | HTTP timeout for `fuxi_contract_call` in seconds (default `30`, clamped to `1`-`120`). |
 | `HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT` | Per-platform connect timeout during gateway startup (seconds). |
 | `HERMES_GATEWAY_BUSY_INPUT_MODE` | Default gateway busy-input behavior: `queue`, `steer`, or `interrupt`. Can be overridden per chat with `/busy`. |
 | `HERMES_GATEWAY_BUSY_ACK_ENABLED` | Whether the gateway sends an acknowledgment message (⚡/⏳/⏩) when a user sends input while the agent is busy (default: `true`). Set to `false` to suppress these messages entirely — the input is still queued/steered/interrupts as normal, only the chat reply is silenced. Bridged from `display.busy_ack_enabled` in `config.yaml`. |

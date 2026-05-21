@@ -164,6 +164,29 @@ assistant gateway install     # creates hermes-gateway-assistant service
 
 Each profile gets its own service name. They run independently.
 
+## Profile runtime autonomy
+
+Profiles isolate state; they do not automatically make an agent autonomous. A profile API server only answers incoming requests unless you explicitly enable the profile goal runtime.
+
+Use the goal runtime only for profiles that are intended to run their own scheduled loop, such as a director/orchestrator profile:
+
+```bash
+HERMES_PROFILE_GOAL_RUNTIME_ENABLED=1
+HERMES_PROFILE_GOAL_RUNTIME_INTERVAL_SECONDS=60
+```
+
+With that flag set, the API server reads profile-local `cron/*.yaml` specs and ticks the normal scheduler while the runtime is alive. Without the flag, the same profile still exposes `/runtime/liveness`, but reports `goal_loop.enabled=false` and does not run cron jobs by itself.
+
+Outbound contract tools are also opt-in. To let a goal-runtime profile call an external contract endpoint, enable the `fuxi_contract` toolset and set:
+
+```bash
+HERMES_PROFILE_CONTRACT_TOOLS_ENABLED=1
+FUXI_CONTRACT_BASE_URL=https://example.supabase.co/functions/v1
+FUXI_CONTRACT_JWT=ey...
+```
+
+Keep these variables profile-local. Do not put them in a shared default profile unless every runtime using that profile is supposed to make those contract calls.
+
 ## Configuring profiles
 
 Each profile has its own:

@@ -377,6 +377,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app["api_server_adapter"] = adapter
     app.router.add_get("/health", adapter._handle_health)
     app.router.add_get("/health/detailed", adapter._handle_health_detailed)
+    app.router.add_get("/runtime/liveness", adapter._handle_runtime_liveness)
     app.router.add_get("/v1/health", adapter._handle_health)
     app.router.add_get("/v1/models", adapter._handle_models)
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
@@ -520,6 +521,154 @@ class TestHealthDetailedEndpoint:
             async with TestClient(TestServer(app)) as cli:
                 resp = await cli.get("/health/detailed")
                 assert resp.status == 200
+
+
+class TestRuntimeLivenessEndpoint:
+    @pytest.mark.asyncio
+    async def test_runtime_liveness_reports_profile_and_goal_loop(self, adapter, monkeypatch, tmp_path):
+        """Profile API runtimes expose machine-readable liveness for FUXI health aggregation."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes" / "profiles" / "director"))
+        adapter._profile_goal_runtime_enabled = True
+        adapter._profile_goal_runtime_task = MagicMock()
+        adapter._profile_goal_runtime_task.done.return_value = False
+        adapter._profile_goal_runtime_interval_seconds = 12
+        adapter._profile_goal_runtime_last_tick_at = 123.5
+        adapter._profile_goal_runtime_last_tick_count = 2
+        adapter._profile_goal_runtime_last_error = None
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/runtime/liveness")
+            assert resp.status == 200
+            data = await resp.json()
+
+        assert data["status"] == "ok"
+        assert data["runtime"] == "api_server"
+        assert data["profile"]["name"] == "director"
+        assert data["goal_loop"]["enabled"] is True
+        assert data["goal_loop"]["running"] is True
+        assert data["goal_loop"]["interval_seconds"] == 12
+        assert data["goal_loop"]["last_tick_count"] == 2
+
+    @pytest.mark.asyncio
+    async def test_connect_does_not_start_goal_loop_by_default(self, monkeypatch):
+        """Ordinary profile API runtimes must not start autonomous goal loops."""
+        monkeypatch.delenv("HERMES_PROFILE_GOAL_RUNTIME_ENABLED", raising=False)
+        monkeypatch.delenv("HERMES_PROFILE_RUNTIME_CRON_ENABLED", raising=False)
+        adapter = _make_adapter(api_key="secret")
+        adapter._host = "127.0.0.1"
+        adapter._port = 0
+
+        created = []
+
+        class DummyTask:
+            def add_done_callback(self, callback):
+                self.callback = callback
+
+            def done(self):
+                return False
+
+            def cancel(self):
+                self.cancelled = True
+
+        def fake_create_task(coro):
+            coro.close()
+            task = DummyTask()
+            created.append(task)
+            return task
+
+        class DummyRunner:
+            def __init__(self, app):
+                self.app = app
+
+            async def setup(self):
+                pass
+
+            async def cleanup(self):
+                pass
+
+        class DummySite:
+            def __init__(self, runner, host, port):
+                self.runner = runner
+                self.host = host
+                self.port = port
+
+            async def start(self):
+                pass
+
+            async def stop(self):
+                pass
+
+        monkeypatch.setattr(asyncio, "create_task", fake_create_task)
+        monkeypatch.setattr(web, "AppRunner", DummyRunner)
+        monkeypatch.setattr(web, "TCPSite", DummySite)
+
+        assert await adapter.connect() is True
+        assert adapter._profile_goal_runtime_enabled is False
+        assert adapter._profile_goal_runtime_task is None
+        assert len(created) == 1  # orphaned-run sweeper only
+
+        await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_connect_starts_goal_loop_only_when_enabled(self, monkeypatch):
+        """Director-style profile runtimes start cron/goal-loop only after explicit opt-in."""
+        monkeypatch.setenv("HERMES_PROFILE_GOAL_RUNTIME_ENABLED", "1")
+        monkeypatch.setenv("HERMES_PROFILE_GOAL_RUNTIME_INTERVAL_SECONDS", "7")
+        adapter = _make_adapter(api_key="secret")
+        adapter._host = "127.0.0.1"
+        adapter._port = 0
+
+        created = []
+
+        class DummyTask:
+            def add_done_callback(self, callback):
+                self.callback = callback
+
+            def done(self):
+                return False
+
+            def cancel(self):
+                self.cancelled = True
+
+        def fake_create_task(coro):
+            coro.close()
+            task = DummyTask()
+            created.append(task)
+            return task
+
+        class DummyRunner:
+            def __init__(self, app):
+                self.app = app
+
+            async def setup(self):
+                pass
+
+            async def cleanup(self):
+                pass
+
+        class DummySite:
+            def __init__(self, runner, host, port):
+                self.runner = runner
+                self.host = host
+                self.port = port
+
+            async def start(self):
+                pass
+
+            async def stop(self):
+                pass
+
+        monkeypatch.setattr(asyncio, "create_task", fake_create_task)
+        monkeypatch.setattr(web, "AppRunner", DummyRunner)
+        monkeypatch.setattr(web, "TCPSite", DummySite)
+
+        assert await adapter.connect() is True
+        assert adapter._profile_goal_runtime_enabled is True
+        assert adapter._profile_goal_runtime_interval_seconds == 7
+        assert adapter._profile_goal_runtime_task is created[1]
+
+        await adapter.disconnect()
 
 
 # ---------------------------------------------------------------------------

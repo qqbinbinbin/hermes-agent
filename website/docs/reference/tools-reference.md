@@ -90,6 +90,14 @@ Scoped to the Feishu document-comment handler. Drives comment read/write operati
 | `search_files` | Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. Ripgrep-backed, faster than shell equivalents. Content search (target='content'): Regex search inside files. Output modes: full matches with line… | — |
 | `write_file` | Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. | — |
 
+## `fuxi_contract` toolset
+
+Opt-in contract tools for profile goal runtimes. Ordinary profile runtimes do not expose this tool unless the environment explicitly enables it.
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `fuxi_contract_call` | POST one allowlisted FUXI contract tool call to an HTTPS Edge Function endpoint. Intended for profile-owned contract tools such as `fuxi.director.*` and `fuxi.knowledge.query`. | `HERMES_PROFILE_CONTRACT_TOOLS_ENABLED`, `FUXI_CONTRACT_BASE_URL`, `FUXI_CONTRACT_JWT` or `FUXI_CONTRACT_BEARER_TOKEN` |
+
 ## `homeassistant` toolset
 
 | Tool | Description | Requires environment |
@@ -249,5 +257,4 @@ Registered only on the `hermes-yuanbao` platform toolset. Yuanbao is Tencent's c
 | `yb_send_dm` | Send a private/direct message to a user in a group, with optional media files. | Yuanbao credentials |
 | `yb_search_sticker` | Search the built-in Yuanbao sticker (TIM face) catalogue by keyword. | Yuanbao credentials |
 | `yb_send_sticker` | Send a built-in sticker to the current Yuanbao chat. | Yuanbao credentials |
-
 

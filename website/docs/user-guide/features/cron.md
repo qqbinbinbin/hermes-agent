@@ -25,6 +25,45 @@ All of this is available to Hermes itself through the `cronjob` tool, so you can
 Cron-run sessions cannot recursively create more cron jobs. Hermes disables cron management tools inside cron executions to prevent runaway scheduling loops.
 :::
 
+## Profile goal runtime (explicit opt-in)
+
+Some deployments run a profile as a long-lived autonomous worker. Hermes supports this by letting an API-server profile mirror profile-local `cron/*.yaml` specs into the normal cron scheduler, then tick the scheduler while that profile API server is alive.
+
+This is **off by default**. Ordinary profiles do not self-run. Enable it only for profiles that are designed to own a goal loop:
+
+```bash
+HERMES_PROFILE_GOAL_RUNTIME_ENABLED=1
+HERMES_PROFILE_GOAL_RUNTIME_INTERVAL_SECONDS=60
+```
+
+Or in `config.yaml`:
+
+```yaml
+platforms:
+  api_server:
+    extra:
+      goal_runtime_enabled: true
+      goal_runtime_interval_seconds: 60
+```
+
+Profile-local specs live under the active profile home:
+
+```yaml title="~/.hermes/profiles/director/cron/director-loop.yaml"
+id: director-loop
+name: Director goal loop
+schedule: every 5m
+prompt: |
+  Run one Plan -> Act -> Observe -> Diagnose -> Re-plan cycle.
+enabled_toolsets:
+  - fuxi_contract
+  - todo
+deliver: local
+```
+
+Supported fields are `id`, `name`, `schedule`, `prompt`, `deliver`, `enabled_toolsets`, and optional `workdir`, `model`, `provider`, `base_url`. On each tick Hermes syncs these files into `cron/jobs.json`, so the existing cron scheduler still owns locking, run output, and next-run bookkeeping.
+
+The profile API server exposes [GET `/runtime/liveness`](./api-server.md#get-runtimeliveness), which reports whether the loop is enabled, running, and when it last synced/ticked. Use that endpoint for external health aggregation instead of inferring liveness from `jobs.json`.
+
 ## Creating scheduled tasks
 
 ### In chat with `/cron`

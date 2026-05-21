@@ -182,6 +182,40 @@ services:
       - ~/.hermes-personal:/opt/data
 ```
 
+### Opt-in director-style profile runtime
+
+For autonomous director/orchestrator profiles, run one container for that profile and enable the goal runtime explicitly. Do not set these variables on ordinary profile containers.
+
+```yaml
+services:
+  hermes-director:
+    image: nousresearch/hermes-agent:latest
+    container_name: hermes-director
+    restart: unless-stopped
+    command: gateway run
+    ports:
+      - "8642:8642"
+    volumes:
+      - ~/.hermes-director:/opt/data
+    environment:
+      - API_SERVER_ENABLED=true
+      - API_SERVER_HOST=0.0.0.0
+      - API_SERVER_KEY=${API_SERVER_KEY}
+      - HERMES_PROFILE_GOAL_RUNTIME_ENABLED=1
+      - HERMES_PROFILE_GOAL_RUNTIME_INTERVAL_SECONDS=60
+      - HERMES_PROFILE_CONTRACT_TOOLS_ENABLED=1
+      - FUXI_CONTRACT_BASE_URL=https://example.supabase.co/functions/v1
+      - FUXI_CONTRACT_JWT=${FUXI_CONTRACT_JWT}
+```
+
+Put the profile-owned loop specs under the mounted data directory, for example `~/.hermes-director/cron/director-loop.yaml`. Verify deployment with:
+
+```sh
+curl -s http://localhost:8642/runtime/liveness | jq .
+```
+
+The expected ordinary-profile state is `goal_loop.enabled=false`. The expected director-profile state is `goal_loop.enabled=true` and `goal_loop.running=true`.
+
 ## Environment variable forwarding
 
 API keys are read from `/opt/data/.env` inside the container. You can also pass environment variables directly:

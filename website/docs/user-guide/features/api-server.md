@@ -225,6 +225,31 @@ Health check. Returns `{"status": "ok"}`. Also available at **GET /v1/health** f
 
 Extended health check that also reports active sessions, running agents, and resource usage. Useful for monitoring/observability tooling.
 
+### GET /runtime/liveness
+
+Unauthenticated profile-runtime liveness endpoint for control planes. It reports the active profile home, process ID, and whether the optional profile goal loop is enabled and running.
+
+```json
+{
+  "status": "ok",
+  "runtime": "api_server",
+  "platform": "hermes-agent",
+  "profile": {"name": "director", "home": "/opt/data/profiles/director"},
+  "pid": 12345,
+  "goal_loop": {
+    "enabled": true,
+    "running": true,
+    "interval_seconds": 60,
+    "last_tick_at": 1780000000.0,
+    "last_tick_count": 1,
+    "last_sync": {"loaded": 1, "created": 0, "updated": 1, "skipped": 0},
+    "last_error": null
+  }
+}
+```
+
+This endpoint does **not** start autonomous work. Ordinary API-server profiles return `goal_loop.enabled=false`. A profile starts its local cron/goal loop only when explicitly configured with `HERMES_PROFILE_GOAL_RUNTIME_ENABLED=1` or `platforms.api_server.extra.goal_runtime_enabled: true`.
+
 ## Runs API (streaming-friendly alternative)
 
 In addition to `/v1/chat/completions` and `/v1/responses`, the server exposes a **runs** API for long-form sessions where the client wants to subscribe to progress events instead of managing streaming themselves.
