@@ -1,0 +1,7 @@
+sandbox_pass:
+  enabled: false
+  schedule: "0 3 * * *"
+  tool: advisor.codex.sandbox_refactor
+  max_workers_per_run: 3
+  per_worker_timeout_ms: 1800000
+  per_worker_max_diff_bytes: 1048576
