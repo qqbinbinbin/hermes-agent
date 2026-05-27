@@ -87,6 +87,84 @@ def test_contract_tool_posts_json_with_bearer_jwt(monkeypatch):
     }
 
 
+def test_contract_tool_exchanges_executor_token_for_short_lived_jwt(monkeypatch):
+    tenant_id = "11111111-2222-3333-4444-555555555555"
+    monkeypatch.setenv("HERMES_PROFILE_CONTRACT_TOOLS_ENABLED", "1")
+    monkeypatch.setenv("FUXI_CONTRACT_BASE_URL", "https://fuxi.example/functions/v1")
+    monkeypatch.setenv("FUXI_CONTRACT_ENDPOINT", "director-contract-gateway")
+    monkeypatch.setenv("FUXI_CONTRACT_JWT_ENDPOINT", "http://executor-gateway:9130/internal/director/jwt")
+    monkeypatch.setenv("EXECUTOR_INTERNAL_TOKEN", "internal-token")
+    monkeypatch.setenv("FUXI_CONTRACT_PROFILE_NAME", f"director@{tenant_id}")
+    monkeypatch.setenv("FUXI_CONTRACT_TENANT_ID", tenant_id)
+    monkeypatch.setenv("FUXI_CONTRACT_GOAL_ID", "goal-1")
+    monkeypatch.delenv("FUXI_CONTRACT_JWT", raising=False)
+    monkeypatch.delenv("FUXI_CONTRACT_BEARER_TOKEN", raising=False)
+    monkeypatch.delenv("SUPABASE_JWT", raising=False)
+
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content.decode("utf-8"))
+        seen.append(
+            {
+                "method": request.method,
+                "url": str(request.url),
+                "internal_token": request.headers.get("X-Internal-Token"),
+                "authorization": request.headers.get("Authorization"),
+                "body": payload,
+            }
+        )
+        if str(request.url) == "http://executor-gateway:9130/internal/director/jwt":
+            return httpx.Response(200, json={"access_token": "runtime-jwt", "token_type": "Bearer"})
+        return httpx.Response(200, json={"ok": True, "data": {"accepted": True}})
+
+    from tools import fuxi_contract_tool
+
+    monkeypatch.setattr(
+        fuxi_contract_tool,
+        "_build_transport",
+        lambda: httpx.MockTransport(handler),
+    )
+
+    result = json.loads(
+        fuxi_contract_tool.fuxi_contract_call(
+            {
+                "tool": "fuxi.director.goal.read",
+                "payload": {"status_filter": ["submitted"]},
+                "idempotency_key": "idem-1",
+                "timeout_seconds": 3,
+            }
+        )
+    )
+
+    assert result["success"] is True
+    assert seen == [
+        {
+            "method": "POST",
+            "url": "http://executor-gateway:9130/internal/director/jwt",
+            "internal_token": "internal-token",
+            "authorization": None,
+            "body": {
+                "profile_name": f"director@{tenant_id}",
+                "tenant_id": tenant_id,
+                "goal_id": "goal-1",
+                "scope": ["fuxi.director.goal.read"],
+            },
+        },
+        {
+            "method": "POST",
+            "url": "https://fuxi.example/functions/v1/director-contract-gateway/fuxi.director.goal.read",
+            "internal_token": None,
+            "authorization": "Bearer runtime-jwt",
+            "body": {
+                "goal_id": "goal-1",
+                "idempotency_key": "idem-1",
+                "payload": {"status_filter": ["submitted"]},
+            },
+        },
+    ]
+
+
 def test_contract_tool_rejects_non_https_base_url(monkeypatch):
     monkeypatch.setenv("HERMES_PROFILE_CONTRACT_TOOLS_ENABLED", "1")
     monkeypatch.setenv("FUXI_CONTRACT_BASE_URL", "http://fuxi.example/functions/v1")

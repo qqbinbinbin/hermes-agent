@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import httpx
 
@@ -25,12 +26,18 @@ DEFAULT_ALLOWED_TOOLS = frozenset(
         "fuxi.director.intervention.request",
         "fuxi.director.intervention.poll",
         "fuxi.director.readback.write",
+        "fuxi.director.health_alert.pull",
+        "fuxi.director.plan.propose",
+        "fuxi.director.solution.upsert",
+        "fuxi.director.solution.submit",
         "fuxi.knowledge.query",
         "fuxi.data.query",
         "fuxi.ontology.query",
         "fuxi.skill.query",
         "fuxi.workforce.task.create",
         "fuxi.workforce.release.request",
+        "fuxi.worker.read",
+        "fuxi.workflow.read",
     }
 )
 
@@ -52,12 +59,64 @@ def _endpoint() -> str:
     return os.getenv("FUXI_CONTRACT_ENDPOINT", DEFAULT_ENDPOINT).strip().strip("/") or DEFAULT_ENDPOINT
 
 
+def _uses_tool_path(endpoint: str) -> bool:
+    return (
+        endpoint == "director-contract-gateway"
+        or "{tool}" in endpoint
+        or is_truthy_value(os.getenv("FUXI_CONTRACT_TOOL_PATH_ENABLED"))
+    )
+
+
+def _contract_url(base_url: str, endpoint: str, tool_name: str) -> str:
+    if "{tool}" in endpoint:
+        return f"{base_url}/{endpoint.replace('{tool}', quote(tool_name, safe='.'))}"
+    if _uses_tool_path(endpoint):
+        return f"{base_url}/{endpoint}/{quote(tool_name, safe='.')}"
+    return f"{base_url}/{endpoint}"
+
+
 def _jwt() -> str:
     return (
         os.getenv("FUXI_CONTRACT_JWT", "")
         or os.getenv("FUXI_CONTRACT_BEARER_TOKEN", "")
         or os.getenv("SUPABASE_JWT", "")
     ).strip()
+
+
+def _profile_name() -> str:
+    return (
+        os.getenv("FUXI_CONTRACT_PROFILE_NAME", "")
+        or os.getenv("HERMES_PROFILE_NAME", "")
+        or os.getenv("API_SERVER_MODEL_NAME", "")
+    ).strip()
+
+
+def _tenant_id() -> str:
+    configured = (
+        os.getenv("FUXI_CONTRACT_TENANT_ID", "")
+        or os.getenv("HERMES_PROFILE_TENANT_ID", "")
+    ).strip()
+    if configured:
+        return configured
+    profile_name = _profile_name()
+    if profile_name.startswith("director@"):
+        return profile_name.removeprefix("director@").strip()
+    return ""
+
+
+def _jwt_endpoint() -> str:
+    configured = (
+        os.getenv("FUXI_CONTRACT_JWT_ENDPOINT", "")
+        or os.getenv("DIRECTOR_JWT_ENDPOINT", "")
+    ).strip()
+    if configured:
+        return configured.rstrip("/")
+
+    jwks_url = os.getenv("DIRECTOR_JWT_JWKS_URL", "").strip()
+    suffix = "/.well-known/director-jwks.json"
+    if jwks_url.endswith(suffix):
+        return f"{jwks_url.removesuffix(suffix)}/internal/director/jwt"
+    return ""
 
 
 def _build_transport() -> httpx.BaseTransport | None:
@@ -73,13 +132,91 @@ def _validate_base_url(base_url: str) -> str | None:
     return None
 
 
+def _dynamic_jwt_ready() -> bool:
+    return bool(
+        os.getenv("EXECUTOR_INTERNAL_TOKEN", "").strip()
+        and _jwt_endpoint()
+        and _profile_name()
+        and _tenant_id()
+    )
+
+
 def check_fuxi_contract_requirements() -> bool:
     if not is_truthy_value(os.getenv("HERMES_PROFILE_CONTRACT_TOOLS_ENABLED")):
         return False
     base_url = _base_url()
     if not base_url or _validate_base_url(base_url):
         return False
-    return bool(_jwt())
+    return bool(_jwt()) or _dynamic_jwt_ready()
+
+
+def _exchange_director_jwt(tool_name: str, goal_id: str | None, timeout_seconds: float) -> tuple[str, str | None]:
+    endpoint = _jwt_endpoint()
+    internal_token = os.getenv("EXECUTOR_INTERNAL_TOKEN", "").strip()
+    profile_name = _profile_name()
+    tenant_id = _tenant_id()
+    missing = [
+        name
+        for name, value in {
+            "FUXI_CONTRACT_JWT_ENDPOINT or DIRECTOR_JWT_JWKS_URL": endpoint,
+            "EXECUTOR_INTERNAL_TOKEN": internal_token,
+            "FUXI_CONTRACT_PROFILE_NAME or API_SERVER_MODEL_NAME": profile_name,
+            "FUXI_CONTRACT_TENANT_ID or director@<tenant> profile name": tenant_id,
+        }.items()
+        if not value
+    ]
+    if missing:
+        return "", ", ".join(missing)
+
+    body: dict[str, Any] = {
+        "profile_name": profile_name,
+        "tenant_id": tenant_id,
+        "scope": [tool_name],
+    }
+    if goal_id:
+        body["goal_id"] = goal_id
+
+    try:
+        with httpx.Client(transport=_build_transport(), timeout=timeout_seconds) as client:
+            response = client.post(
+                endpoint,
+                headers={
+                    "X-Internal-Token": internal_token,
+                    "Content-Type": "application/json",
+                },
+                json=body,
+            )
+            try:
+                data: Any = response.json()
+            except ValueError:
+                data = {}
+            if response.status_code >= 400:
+                return "", f"executor-gateway returned HTTP {response.status_code}: {data}"
+            token = str(data.get("access_token") or "").strip() if isinstance(data, dict) else ""
+            if not token:
+                return "", "executor-gateway response did not include access_token"
+            return token, None
+    except httpx.HTTPError as exc:
+        return "", str(exc)
+
+
+def _request_body(endpoint: str, payload: dict[str, Any], args: dict[str, Any]) -> dict[str, Any]:
+    if not _uses_tool_path(endpoint):
+        return {
+            "tool": str(args.get("tool") or "").strip(),
+            "payload": payload,
+        }
+
+    goal_id = str(args.get("goal_id") or payload.get("goal_id") or os.getenv("FUXI_CONTRACT_GOAL_ID", "")).strip()
+    body: dict[str, Any] = {
+        "idempotency_key": str(args.get("idempotency_key") or f"hermes-{uuid.uuid4()}"),
+        "payload": payload,
+    }
+    if goal_id:
+        body["goal_id"] = goal_id
+    if args.get("sequence_no") is not None:
+        body["sequence_no"] = args.get("sequence_no")
+    return body
 
 
 def fuxi_contract_call(args: dict[str, Any], **_kw) -> str:
@@ -105,19 +242,27 @@ def fuxi_contract_call(args: dict[str, Any], **_kw) -> str:
     if base_error:
         return tool_error("invalid_base_url", detail=base_error)
 
-    token = _jwt()
-    if not token:
-        return tool_error("missing_jwt", detail="FUXI_CONTRACT_JWT or FUXI_CONTRACT_BEARER_TOKEN is required")
-
     try:
         timeout_seconds = float(args.get("timeout_seconds") or os.getenv("FUXI_CONTRACT_TIMEOUT_SECONDS", "30"))
     except (TypeError, ValueError):
         timeout_seconds = 30.0
     timeout_seconds = max(1.0, min(timeout_seconds, 120.0))
 
-    request_body = {"tool": tool_name, "payload": payload}
-    url = f"{base_url}/{_endpoint()}"
+    endpoint = _endpoint()
+    request_body = _request_body(endpoint, payload, args)
+    url = _contract_url(base_url, endpoint, tool_name)
     transport = _build_transport()
+    goal_id = request_body.get("goal_id")
+    token = _jwt()
+    if not token:
+        token, exchange_error = _exchange_director_jwt(
+            tool_name,
+            goal_id if isinstance(goal_id, str) else None,
+            timeout_seconds,
+        )
+        if exchange_error:
+            return tool_error("missing_jwt", detail=exchange_error)
+
     try:
         with httpx.Client(transport=transport, timeout=timeout_seconds) as client:
             response = client.post(
@@ -164,6 +309,18 @@ FUXI_CONTRACT_CALL_SCHEMA = {
                 "type": "number",
                 "description": "Optional request timeout between 1 and 120 seconds.",
             },
+            "goal_id": {
+                "type": "string",
+                "description": "Optional Director goal id for ledger mutations and scoped runtime JWT claims.",
+            },
+            "idempotency_key": {
+                "type": "string",
+                "description": "Optional idempotency key. Generated automatically when omitted.",
+            },
+            "sequence_no": {
+                "type": "number",
+                "description": "Optional per-goal sequence number for ordered Director ledger writes.",
+            },
         },
         "required": ["tool", "payload"],
     },
@@ -176,7 +333,7 @@ registry.register(
     schema=FUXI_CONTRACT_CALL_SCHEMA,
     handler=fuxi_contract_call,
     check_fn=check_fuxi_contract_requirements,
-    requires_env=["HERMES_PROFILE_CONTRACT_TOOLS_ENABLED", "FUXI_CONTRACT_BASE_URL", "FUXI_CONTRACT_JWT"],
+    requires_env=["HERMES_PROFILE_CONTRACT_TOOLS_ENABLED", "FUXI_CONTRACT_BASE_URL"],
     description="Call allowlisted FUXI contract tools over HTTPS from a profile goal runtime",
     emoji="🔗",
 )
