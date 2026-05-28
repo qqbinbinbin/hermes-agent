@@ -30,6 +30,8 @@ DEFAULT_ALLOWED_TOOLS = frozenset(
         "fuxi.director.plan.propose",
         "fuxi.director.solution.upsert",
         "fuxi.director.solution.submit",
+        "fuxi.director.acceptance.run",
+        "fuxi.director.export.pack",
         "fuxi.knowledge.query",
         "fuxi.data.query",
         "fuxi.ontology.query",

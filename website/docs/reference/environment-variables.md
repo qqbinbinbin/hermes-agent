@@ -498,7 +498,7 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 | `FUXI_CONTRACT_ENDPOINT` | Edge Function path appended to `FUXI_CONTRACT_BASE_URL` for contract calls (default: `fuxi-contract-tools`). |
 | `FUXI_CONTRACT_JWT` | Bearer JWT used by `fuxi_contract_call`. Prefer a profile-scoped service token with the minimum contract permissions. |
 | `FUXI_CONTRACT_BEARER_TOKEN` | Alias token source for `fuxi_contract_call`; used when `FUXI_CONTRACT_JWT` is unset. |
-| `FUXI_CONTRACT_TOOL_ALLOWLIST` | Comma-separated override for allowed contract tool names. Defaults to the built-in `fuxi.director.*`, `fuxi.knowledge.query`, `fuxi.data.query`, `fuxi.ontology.query`, `fuxi.skill.query`, `fuxi.workforce.task.create`, `fuxi.workforce.release.request`, `fuxi.director.solution.upsert`, and `fuxi.director.solution.submit` set. |
+| `FUXI_CONTRACT_TOOL_ALLOWLIST` | Comma-separated override for allowed contract tool names. Defaults to the built-in `fuxi.director.*`, `fuxi.knowledge.query`, `fuxi.data.query`, `fuxi.ontology.query`, `fuxi.skill.query`, `fuxi.workforce.task.create`, `fuxi.workforce.release.request`, `fuxi.director.solution.upsert`, `fuxi.director.solution.submit`, `fuxi.director.acceptance.run`, and `fuxi.director.export.pack` set. |
 | `FUXI_CONTRACT_TIMEOUT_SECONDS` | HTTP timeout for `fuxi_contract_call` in seconds (default `30`, clamped to `1`-`120`). |
 | `HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT` | Per-platform connect timeout during gateway startup (seconds). |
 | `HERMES_GATEWAY_BUSY_INPUT_MODE` | Default gateway busy-input behavior: `queue`, `steer`, or `interrupt`. Can be overridden per chat with `/busy`. |
