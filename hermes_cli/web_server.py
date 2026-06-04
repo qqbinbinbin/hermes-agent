@@ -3373,6 +3373,17 @@ _VALID_CHANNEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
 
 
+def _is_public_bind() -> bool:
+    """Return True when the dashboard listens on a non-loopback interface."""
+    bound_host = getattr(app.state, "bound_host", "") or ""
+    host = str(bound_host).strip().lower()
+    if host.startswith("[") and "]" in host:
+        host = host[1:host.find("]")]
+    if host in {"0.0.0.0", "::"}:
+        return True
+    return bool(host) and host not in _LOOPBACK_HOSTS
+
+
 def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     """Check if the WebSocket client IP is acceptable.
 
