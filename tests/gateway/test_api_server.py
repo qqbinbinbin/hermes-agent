@@ -410,6 +410,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/health", adapter._handle_health)
     app.router.add_get("/health/detailed", adapter._handle_health_detailed)
     app.router.add_get("/runtime/liveness", adapter._handle_runtime_liveness)
+    app.router.add_post("/hermes-feedback-ingest", adapter._handle_fuxi_feedback_ingest)
     app.router.add_get("/v1/health", adapter._handle_health)
     app.router.add_get("/v1/models", adapter._handle_models)
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)

@@ -1,6 +1,7 @@
 """Tests for FUXI profile contract HTTP tool calls."""
 
 import json
+import re
 
 import httpx
 
@@ -84,6 +85,69 @@ def test_contract_tool_posts_json_with_bearer_jwt(monkeypatch):
             "tool": "fuxi.knowledge.query",
             "payload": {"query": "policy"},
         },
+    }
+
+
+def test_contract_tool_posts_business_contract_payload_with_hmac(monkeypatch):
+    monkeypatch.setenv("HERMES_PROFILE_CONTRACT_TOOLS_ENABLED", "1")
+    monkeypatch.setenv("FUXI_CONTRACT_BASE_URL", "https://fuxi.example/functions/v1")
+    monkeypatch.setenv("FUXI_CONTRACT_ENDPOINT", "business-contract-tools")
+    monkeypatch.setenv("FUXI_CONTRACT_AUTH_MODE", "hmac")
+    monkeypatch.setenv("HERMES_INGEST_HMAC_KEY", "hmac-secret")
+    monkeypatch.setenv("FUXI_CONTRACT_TENANT_ID", "11111111-2222-3333-4444-555555555555")
+    monkeypatch.setenv("FUXI_CONTRACT_EMPLOYEE_ID", "22222222-3333-4444-5555-666666666666")
+    monkeypatch.setenv("HERMES_SESSION_ID", "session-1")
+    monkeypatch.setenv(
+        "FUXI_CONTRACT_TOOL_ALLOWLIST",
+        "fuxi.knowledge.qa,fuxi.askdata.execute",
+    )
+    monkeypatch.delenv("FUXI_CONTRACT_JWT", raising=False)
+    monkeypatch.delenv("FUXI_CONTRACT_BEARER_TOKEN", raising=False)
+    monkeypatch.delenv("SUPABASE_JWT", raising=False)
+
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["method"] = request.method
+        seen["url"] = str(request.url)
+        seen["authorization"] = request.headers.get("Authorization")
+        seen["timestamp"] = request.headers.get("X-FUXI-HERMES-TIMESTAMP")
+        seen["signature"] = request.headers.get("X-FUXI-HERMES-SIGNATURE")
+        seen["content_type"] = request.headers.get("Content-Type")
+        seen["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(200, json={"tool": "fuxi.knowledge.qa", "result": {"answer": "ok"}})
+
+    from tools import fuxi_contract_tool
+
+    monkeypatch.setattr(
+        fuxi_contract_tool,
+        "_build_transport",
+        lambda: httpx.MockTransport(handler),
+    )
+
+    result = json.loads(
+        fuxi_contract_tool.fuxi_contract_call(
+            {
+                "tool": "fuxi.knowledge.qa",
+                "payload": {"question": "policy"},
+                "timeout_seconds": 3,
+            }
+        )
+    )
+
+    assert result["success"] is True
+    assert seen["method"] == "POST"
+    assert seen["url"] == "https://fuxi.example/functions/v1/business-contract-tools"
+    assert seen["authorization"] is None
+    assert seen["content_type"] == "application/json"
+    assert re.match(r"^\d{4}-\d{2}-\d{2}T", seen["timestamp"])
+    assert re.match(r"^sha256=[a-f0-9]{64}$", seen["signature"])
+    assert seen["body"] == {
+        "action": "fuxi.knowledge.qa",
+        "tenant_id": "11111111-2222-3333-4444-555555555555",
+        "employee_id": "22222222-3333-4444-5555-666666666666",
+        "caller_session": "session-1",
+        "input": {"question": "policy"},
     }
 
 

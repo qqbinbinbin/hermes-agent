@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import json
 import os
+import hmac
+import hashlib
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import quote, urlparse
 
@@ -106,6 +109,42 @@ def _tenant_id() -> str:
     return ""
 
 
+def _employee_id() -> str:
+    return (
+        os.getenv("FUXI_CONTRACT_EMPLOYEE_ID", "")
+        or os.getenv("FUXI_CONTRACT_WORKER_ID", "")
+        or os.getenv("HERMES_PROFILE_WORKER_ID", "")
+    ).strip()
+
+
+def _auth_mode() -> str:
+    return os.getenv("FUXI_CONTRACT_AUTH_MODE", "").strip().lower()
+
+
+def _hmac_secret_env() -> str:
+    return os.getenv("FUXI_CONTRACT_HMAC_SECRET_ENV", "HERMES_INGEST_HMAC_KEY").strip() or "HERMES_INGEST_HMAC_KEY"
+
+
+def _hmac_secret() -> str:
+    return os.getenv(_hmac_secret_env(), "").strip()
+
+
+def _caller_session() -> str:
+    try:
+        from gateway.session_context import get_session_env
+
+        session_id = get_session_env("HERMES_SESSION_ID", "")
+        if session_id:
+            return session_id
+    except Exception:
+        pass
+    return (
+        os.getenv("HERMES_SESSION_ID", "")
+        or os.getenv("HERMES_SESSION_KEY", "")
+        or os.getenv("FUXI_CONTRACT_CALLER_SESSION", "")
+    ).strip()
+
+
 def _jwt_endpoint() -> str:
     configured = (
         os.getenv("FUXI_CONTRACT_JWT_ENDPOINT", "")
@@ -149,6 +188,8 @@ def check_fuxi_contract_requirements() -> bool:
     base_url = _base_url()
     if not base_url or _validate_base_url(base_url):
         return False
+    if _auth_mode() == "hmac":
+        return bool(_hmac_secret() and _tenant_id() and _employee_id())
     return bool(_jwt()) or _dynamic_jwt_ready()
 
 
@@ -221,6 +262,29 @@ def _request_body(endpoint: str, payload: dict[str, Any], args: dict[str, Any]) 
     return body
 
 
+def _business_contract_body(payload: dict[str, Any], args: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "action": str(args.get("tool") or "").strip(),
+        "tenant_id": str(args.get("tenant_id") or payload.get("tenant_id") or _tenant_id()).strip(),
+        "employee_id": str(args.get("employee_id") or payload.get("employee_id") or _employee_id()).strip(),
+        "caller_session": str(args.get("caller_session") or payload.get("caller_session") or _caller_session()).strip(),
+        "input": payload,
+    }
+
+
+def _sign_hmac_body(body_text: str, timestamp: str, secret: str) -> str:
+    digest = hmac.new(
+        secret.encode("utf-8"),
+        f"{timestamp}.{body_text}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"sha256={digest}"
+
+
+def _utc_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 def fuxi_contract_call(args: dict[str, Any], **_kw) -> str:
     """POST one allowlisted FUXI contract call to the configured Edge endpoint."""
     if not is_truthy_value(os.getenv("HERMES_PROFILE_CONTRACT_TOOLS_ENABLED")):
@@ -251,30 +315,46 @@ def fuxi_contract_call(args: dict[str, Any], **_kw) -> str:
     timeout_seconds = max(1.0, min(timeout_seconds, 120.0))
 
     endpoint = _endpoint()
-    request_body = _request_body(endpoint, payload, args)
+    if _auth_mode() == "hmac":
+        request_body = _business_contract_body(payload, args)
+    else:
+        request_body = _request_body(endpoint, payload, args)
     url = _contract_url(base_url, endpoint, tool_name)
     transport = _build_transport()
-    goal_id = request_body.get("goal_id")
-    token = _jwt()
-    if not token:
-        token, exchange_error = _exchange_director_jwt(
-            tool_name,
-            goal_id if isinstance(goal_id, str) else None,
-            timeout_seconds,
-        )
-        if exchange_error:
-            return tool_error("missing_jwt", detail=exchange_error)
+    headers = {"Content-Type": "application/json"}
+    if _auth_mode() == "hmac":
+        secret = _hmac_secret()
+        if not secret:
+            return tool_error("missing_hmac_secret", detail=f"{_hmac_secret_env()} is required")
+        if not request_body["tenant_id"]:
+            return tool_error("missing_tenant_id", detail="FUXI_CONTRACT_TENANT_ID or tenant_id is required")
+        if not request_body["employee_id"]:
+            return tool_error("missing_employee_id", detail="FUXI_CONTRACT_EMPLOYEE_ID or employee_id is required")
+        body_text = json.dumps(request_body, ensure_ascii=False, separators=(",", ":"))
+        timestamp = _utc_timestamp()
+        headers["X-FUXI-HERMES-TIMESTAMP"] = timestamp
+        headers["X-FUXI-HERMES-SIGNATURE"] = _sign_hmac_body(body_text, timestamp, secret)
+        request_content: Any = body_text
+    else:
+        goal_id = request_body.get("goal_id")
+        token = _jwt()
+        if not token:
+            token, exchange_error = _exchange_director_jwt(
+                tool_name,
+                goal_id if isinstance(goal_id, str) else None,
+                timeout_seconds,
+            )
+            if exchange_error:
+                return tool_error("missing_jwt", detail=exchange_error)
+        headers["Authorization"] = f"Bearer {token}"
+        request_content = request_body
 
     try:
         with httpx.Client(transport=transport, timeout=timeout_seconds) as client:
-            response = client.post(
-                url,
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Content-Type": "application/json",
-                },
-                json=request_body,
-            )
+            if _auth_mode() == "hmac":
+                response = client.post(url, headers=headers, content=request_content)
+            else:
+                response = client.post(url, headers=headers, json=request_content)
             try:
                 data: Any = response.json()
             except ValueError:

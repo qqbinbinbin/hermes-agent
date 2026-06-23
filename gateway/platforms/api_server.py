@@ -59,6 +59,11 @@ from gateway.platforms.base import (
     SendResult,
     is_network_accessible,
 )
+from gateway.platforms.fuxi_feedback_ingest import (
+    append_feedback_experience,
+    build_feedback_experience_prompt,
+    verify_hmac_headers,
+)
 from hermes_constants import get_hermes_home
 from utils import is_truthy_value
 
@@ -1080,6 +1085,35 @@ class APIServerAdapter(BasePlatformAdapter):
     async def _handle_health(self, request: "web.Request") -> "web.Response":
         """GET /health — simple health check."""
         return web.json_response({"status": "ok", "platform": "hermes-agent"})
+
+    async def _handle_fuxi_feedback_ingest(self, request: "web.Request") -> "web.Response":
+        """POST /hermes-feedback-ingest — authenticated FUXI feedback experience ingest."""
+        try:
+            body = await request.read()
+        except Exception:
+            return web.json_response({"ok": False, "error": "invalid_body"}, status=400)
+
+        ok, reason = verify_hmac_headers(body, request.headers)
+        if not ok:
+            status = 500 if reason == "missing_secret" else 401
+            return web.json_response({"ok": False, "error": reason}, status=status)
+
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return web.json_response({"ok": False, "error": "invalid_json"}, status=400)
+        if not isinstance(payload, dict):
+            return web.json_response({"ok": False, "error": "invalid_payload"}, status=400)
+
+        try:
+            append_feedback_experience(payload)
+        except ValueError as exc:
+            return web.json_response({"ok": False, "error": str(exc)}, status=400)
+        except Exception as exc:
+            logger.warning("FUXI feedback ingest failed: %s", exc)
+            return web.json_response({"ok": False, "error": "persist_failed"}, status=500)
+
+        return web.json_response({"ok": True, "recorded": True}, status=202)
 
     async def _handle_health_detailed(self, request: "web.Request") -> "web.Response":
         """GET /health/detailed — rich status for cross-container dashboard probing.
@@ -3539,6 +3573,15 @@ class APIServerAdapter(BasePlatformAdapter):
         another thread to stop in-progress LLM calls.
         """
         loop = asyncio.get_running_loop()
+        feedback_prompt = build_feedback_experience_prompt(
+            tenant_id=os.getenv("FUXI_CONTRACT_TENANT_ID") or None,
+            employee_id=os.getenv("FUXI_CONTRACT_EMPLOYEE_ID") or None,
+            session_id=session_id,
+        )
+        if feedback_prompt:
+            ephemeral_system_prompt = "\n\n".join(
+                part for part in (ephemeral_system_prompt, feedback_prompt) if part
+            )
 
         def _run():
             agent = self._create_agent(
@@ -4202,6 +4245,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/health", self._handle_health)
             self._app.router.add_get("/health/detailed", self._handle_health_detailed)
             self._app.router.add_get("/runtime/liveness", self._handle_runtime_liveness)
+            self._app.router.add_post("/hermes-feedback-ingest", self._handle_fuxi_feedback_ingest)
             self._app.router.add_get("/v1/health", self._handle_health)
             self._app.router.add_get("/v1/models", self._handle_models)
             self._app.router.add_get("/v1/capabilities", self._handle_capabilities)
