@@ -11,6 +11,7 @@ import json
 import os
 import hmac
 import hashlib
+import ipaddress
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -166,11 +167,24 @@ def _build_transport() -> httpx.BaseTransport | None:
 
 def _validate_base_url(base_url: str) -> str | None:
     parsed = urlparse(base_url)
+    if parsed.scheme == "http" and _auth_mode() == "hmac" and _is_internal_http_host(parsed.hostname or ""):
+        return None
     if parsed.scheme != "https":
         return "FUXI_CONTRACT_BASE_URL must use https"
     if not parsed.netloc:
         return "FUXI_CONTRACT_BASE_URL must include a host"
     return None
+
+
+def _is_internal_http_host(hostname: str) -> bool:
+    host = hostname.strip().lower()
+    if host in {"localhost", "host.docker.internal", "host.containers.internal"}:
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return address.is_loopback or address.is_private or address.is_link_local
 
 
 def _dynamic_jwt_ready() -> bool:

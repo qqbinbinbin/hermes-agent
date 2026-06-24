@@ -246,3 +246,69 @@ def test_contract_tool_rejects_non_https_base_url(monkeypatch):
     )
 
     assert result["error"] == "invalid_base_url"
+
+
+def test_business_contract_hmac_allows_internal_http_base_url(monkeypatch):
+    monkeypatch.setenv("HERMES_PROFILE_CONTRACT_TOOLS_ENABLED", "1")
+    monkeypatch.setenv("FUXI_CONTRACT_BASE_URL", "http://host.docker.internal:8000/functions/v1")
+    monkeypatch.setenv("FUXI_CONTRACT_ENDPOINT", "business-contract-tools")
+    monkeypatch.setenv("FUXI_CONTRACT_AUTH_MODE", "hmac")
+    monkeypatch.setenv("HERMES_INGEST_HMAC_KEY", "hmac-secret")
+    monkeypatch.setenv("FUXI_CONTRACT_TENANT_ID", "11111111-2222-3333-4444-555555555555")
+    monkeypatch.setenv("FUXI_CONTRACT_EMPLOYEE_ID", "22222222-3333-4444-5555-666666666666")
+    monkeypatch.setenv("FUXI_CONTRACT_TOOL_ALLOWLIST", "fuxi.knowledge.qa")
+
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["signature"] = request.headers.get("X-FUXI-HERMES-SIGNATURE")
+        seen["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(200, json={"ok": True})
+
+    from tools import fuxi_contract_tool
+
+    monkeypatch.setattr(
+        fuxi_contract_tool,
+        "_build_transport",
+        lambda: httpx.MockTransport(handler),
+    )
+
+    result = json.loads(
+        fuxi_contract_tool.fuxi_contract_call(
+            {
+                "tool": "fuxi.knowledge.qa",
+                "payload": {"question": "policy"},
+                "timeout_seconds": 3,
+            }
+        )
+    )
+
+    assert result["success"] is True
+    assert seen["url"] == "http://host.docker.internal:8000/functions/v1/business-contract-tools"
+    assert seen["signature"].startswith("sha256=")
+    assert seen["body"]["tenant_id"] == "11111111-2222-3333-4444-555555555555"
+
+
+def test_business_contract_hmac_rejects_external_http_base_url(monkeypatch):
+    monkeypatch.setenv("HERMES_PROFILE_CONTRACT_TOOLS_ENABLED", "1")
+    monkeypatch.setenv("FUXI_CONTRACT_BASE_URL", "http://fuxi.example/functions/v1")
+    monkeypatch.setenv("FUXI_CONTRACT_ENDPOINT", "business-contract-tools")
+    monkeypatch.setenv("FUXI_CONTRACT_AUTH_MODE", "hmac")
+    monkeypatch.setenv("HERMES_INGEST_HMAC_KEY", "hmac-secret")
+    monkeypatch.setenv("FUXI_CONTRACT_TENANT_ID", "11111111-2222-3333-4444-555555555555")
+    monkeypatch.setenv("FUXI_CONTRACT_EMPLOYEE_ID", "22222222-3333-4444-5555-666666666666")
+    monkeypatch.setenv("FUXI_CONTRACT_TOOL_ALLOWLIST", "fuxi.knowledge.qa")
+
+    from tools.fuxi_contract_tool import fuxi_contract_call
+
+    result = json.loads(
+        fuxi_contract_call(
+            {
+                "tool": "fuxi.knowledge.qa",
+                "payload": {"question": "policy"},
+            }
+        )
+    )
+
+    assert result["error"] == "invalid_base_url"
