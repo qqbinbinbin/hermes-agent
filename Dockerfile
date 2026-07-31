@@ -1,5 +1,62 @@
-# FUXI prepared build path intentionally avoids upstream remote uv/gosu stages.
-# Node 22 is still copied from the upstream node image to match v0.15.x runtime expectations.
+# FUXI prepared builds keep downloaded tool binaries in the build context.
+# Networked dependency resolution is allowed only through the controlled
+# connected builder; customer hosts receive this image fully prepared.
+# Debian 13 still ships SQLite 3.46.1, which contains the upstream WAL-reset
+# corruption bug. Build a pinned shared library for the runtime image instead
+# of relying on a distro backport that trixie does not currently provide.
+# See #70480 and https://sqlite.org/wal.html#walresetbug.
+FROM debian:13.4 AS sqlite_build
+ARG SQLITE_AUTOCONF_VERSION=3530400
+ARG SQLITE_SHA256=0e9483900e92cd5de8fd48d16bf9200145a61f7fd5be542a5ac81d8a9516eb9c
+RUN rm -f /etc/apt/sources.list.d/debian.sources && \
+    printf '%s\n' \
+        'deb http://mirrors.aliyun.com/debian trixie main contrib non-free non-free-firmware' \
+        'deb http://mirrors.aliyun.com/debian trixie-updates main contrib non-free non-free-firmware' \
+        'deb http://mirrors.aliyun.com/debian-security trixie-security main contrib non-free non-free-firmware' \
+        > /etc/apt/sources.list && \
+    printf 'Acquire::ForceIPv4 "true";\nAcquire::Retries "2";\nAcquire::http::Timeout "30";\n' > /etc/apt/apt.conf.d/99fuxi-timeouts && \
+    apt-get -o=Dpkg::Use-Pty=0 update && \
+    apt-get install -y --no-install-recommends \
+        build-essential ca-certificates curl && \
+    rm -rf /var/lib/apt/lists/* && \
+    (curl -fsSL --retry 1 --retry-all-errors --connect-timeout 15 --max-time 60 \
+        -o /tmp/sqlite.tar.gz \
+        "https://sqlite.org/2026/sqlite-autoconf-${SQLITE_AUTOCONF_VERSION}.tar.gz" || \
+     curl -fsSL --retry 3 --retry-all-errors --connect-timeout 15 --max-time 120 \
+        -o /tmp/sqlite.tar.gz \
+        "https://sources.buildroot.net/sqlite/sqlite-autoconf-${SQLITE_AUTOCONF_VERSION}.tar.gz") && \
+    printf '%s  %s\n' "${SQLITE_SHA256}" /tmp/sqlite.tar.gz > /tmp/sqlite.sha256 && \
+    sha256sum -c /tmp/sqlite.sha256 && \
+    tar -xzf /tmp/sqlite.tar.gz -C /tmp && \
+    cd "/tmp/sqlite-autoconf-${SQLITE_AUTOCONF_VERSION}" && \
+    CFLAGS="-O2 \
+        -DSQLITE_ENABLE_FTS3 \
+        -DSQLITE_ENABLE_FTS3_PARENTHESIS \
+        -DSQLITE_ENABLE_FTS4 \
+        -DSQLITE_ENABLE_FTS5 \
+        -DSQLITE_ENABLE_RTREE \
+        -DSQLITE_ENABLE_GEOPOLY \
+        -DSQLITE_ENABLE_COLUMN_METADATA \
+        -DSQLITE_ENABLE_UNLOCK_NOTIFY \
+        -DSQLITE_ENABLE_DBSTAT_VTAB \
+        -DSQLITE_ENABLE_DBPAGE_VTAB \
+        -DSQLITE_ENABLE_MATH_FUNCTIONS \
+        -DSQLITE_ENABLE_PREUPDATE_HOOK \
+        -DSQLITE_ENABLE_SESSION \
+        -DSQLITE_SECURE_DELETE \
+        -DSQLITE_THREADSAFE=1 \
+        -DSQLITE_MAX_VARIABLE_NUMBER=250000" \
+        ./configure --prefix=/opt/sqlite-fixed --disable-static && \
+    make -j"$(nproc)" && \
+    make install
+
+# Node 22 LTS source stage. Debian trixie's bundled nodejs is pinned to 20.x
+# which reached EOL in April 2026 — we copy node + npm + corepack from the
+# upstream node:22 image instead so we can stay on a supported LTS without
+# waiting for Debian 14 (forky, ~mid-2027).  Bookworm-based slim image used
+# so the produced binary links against glibc 2.36, which runs cleanly on
+# our Debian 13 (trixie, glibc 2.41) runtime.  Bumping to a new Node major
+# is a one-line ARG change; see #4977.
 FROM node:22-bookworm-slim@sha256:7af03b14a13c8cdd38e45058fd957bf00a72bbe17feac43b1c15a689c029c732 AS node_source
 FROM debian:13.4
 
@@ -13,11 +70,10 @@ ENV UV_LINK_MODE=copy
 # Store Playwright browsers outside the volume mount so the build-time
 # install survives the /opt/data volume overlay at runtime.
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
-ENV npm_config_install_links=false
 
 # Install system dependencies through the FUXI controlled mirror path.
-# This preserves the offline-delivery guardrail that rejects upstream remote uv/gosu
-# remote stages while still carrying the v0.15.x s6 runtime dependencies.
+# s6-overlay remains PID 1 and supervises the same 0.19.1 services; only the
+# Debian package source and download timeout policy differ from upstream.
 RUN rm -f /etc/apt/sources.list.d/debian.sources && \
     printf '%s\n' \
     'deb http://mirrors.aliyun.com/debian trixie main contrib non-free non-free-firmware' \
@@ -30,25 +86,56 @@ RUN rm -f /etc/apt/sources.list.d/debian.sources && \
     ca-certificates curl iputils-ping python3 python-is-python3 ripgrep ffmpeg gcc g++ make cmake python3-dev python3-venv libffi-dev libolm-dev procps git openssh-client docker-cli xz-utils && \
     rm -rf /var/lib/apt/lists/*
 
+# Prefer the fixed SQLite over Debian's vulnerable libsqlite3.so.0. Keep the
+# public library name stable so both the system interpreter and the uv-created
+# venv resolve the replacement without changing Python import paths.
+COPY --from=sqlite_build /opt/sqlite-fixed/lib/libsqlite3.so.3.53.4 /usr/local/lib/
+RUN ln -sf libsqlite3.so.3.53.4 /usr/local/lib/libsqlite3.so.0 && \
+    ln -sf libsqlite3.so.3.53.4 /usr/local/lib/libsqlite3.so && \
+    printf '/usr/local/lib\n' > /etc/ld.so.conf.d/000-sqlite-fixed.conf && \
+    ldconfig && \
+    python3 -c "import sqlite3, sys; \
+v = sqlite3.sqlite_version_info; \
+sys.exit(f'linked SQLite {sqlite3.sqlite_version} still has the WAL-reset bug') if v < (3, 51, 3) else None; \
+db = sqlite3.connect(':memory:'); \
+db.execute(\"CREATE VIRTUAL TABLE docs USING fts5(content, tokenize='trigram')\"); \
+db.execute(\"INSERT INTO docs VALUES ('hermes')\"); \
+sys.exit('SQLite FTS5 trigram self-test failed') if db.execute(\"SELECT count(*) FROM docs WHERE docs MATCH 'erm'\").fetchone()[0] != 1 else None; \
+db.close()"
+
 # ---------- s6-overlay install ----------
 # s6-overlay provides supervision for the main hermes process, the dashboard,
 # and per-profile gateways. /init becomes PID 1 below — see ENTRYPOINT.
+#
+# Multi-arch: BuildKit auto-populates TARGETARCH (amd64 / arm64). s6-overlay
+# uses tarball names keyed on the kernel arch string (x86_64 / aarch64), so
+# we map between them inline. The noarch + symlinks tarballs are
+# architecture-independent and reused as-is.
+#
+# We use `curl` instead of `ADD` for ALL three tarballs: `ADD` evaluates its
+# URL at parse time (no ARG / TARGETARCH substitution) and — critically for
+# CI reliability — cannot retry, so a single GitHub-release CDN blip fails
+# the whole 15-45 min build. curl -fsSL --retry 3 self-heals those blips,
+# and every tarball is still checksum-verified below before extraction.
 ARG TARGETARCH
 ARG S6_OVERLAY_VERSION=3.2.3.0
 ARG S6_OVERLAY_NOARCH_SHA256=b720f9d9340efc8bb07528b9743813c836e4b02f8693d90241f047998b4c53cf
 ARG S6_OVERLAY_X86_64_SHA256=a93f02882c6ed46b21e7adb5c0add86154f01236c93cd82c7d682722e8840563
 ARG S6_OVERLAY_AARCH64_SHA256=0952056ff913482163cc30e35b2e944b507ba1025d78f5becbb89367bf344581
 ARG S6_OVERLAY_SYMLINKS_SHA256=a60dc5235de3ecbcf874b9c1f18d73263ab99b289b9329aa950e8729c4789f0e
-ADD https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-noarch.tar.xz /tmp/
-ADD https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-symlinks-noarch.tar.xz /tmp/
 RUN set -eu; \
     case "${TARGETARCH:-amd64}" in \
         amd64) s6_arch="x86_64"; s6_arch_sha="${S6_OVERLAY_X86_64_SHA256}" ;; \
         arm64) s6_arch="aarch64"; s6_arch_sha="${S6_OVERLAY_AARCH64_SHA256}" ;; \
         *) echo "Unsupported TARGETARCH=${TARGETARCH} for s6-overlay" >&2; exit 1 ;; \
     esac; \
+    base="https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}"; \
+    curl -fsSL --retry 3 -o /tmp/s6-overlay-noarch.tar.xz \
+        "${base}/s6-overlay-noarch.tar.xz"; \
+    curl -fsSL --retry 3 -o /tmp/s6-overlay-symlinks-noarch.tar.xz \
+        "${base}/s6-overlay-symlinks-noarch.tar.xz"; \
     curl -fsSL --retry 3 -o /tmp/s6-overlay-arch.tar.xz \
-        "https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-${s6_arch}.tar.xz"; \
+        "${base}/s6-overlay-${s6_arch}.tar.xz"; \
     { \
         printf '%s  %s\n' "${S6_OVERLAY_NOARCH_SHA256}" /tmp/s6-overlay-noarch.tar.xz; \
         printf '%s  %s\n' "${s6_arch_sha}" /tmp/s6-overlay-arch.tar.xz; \
@@ -58,20 +145,22 @@ RUN set -eu; \
     tar -C / -Jxpf /tmp/s6-overlay-noarch.tar.xz; \
     tar -C / -Jxpf /tmp/s6-overlay-arch.tar.xz; \
     tar -C / -Jxpf /tmp/s6-overlay-symlinks-noarch.tar.xz; \
-    rm /tmp/s6-overlay-*.tar.xz /tmp/s6-overlay.sha256; \
-    # #34192: backward-compat shim for orchestration templates that still\
-    # reference the legacy /usr/bin/tini entrypoint (e.g. Hostinger's\
-    # 'Hermes WebUI' catalog). The image has moved to s6-overlay /init\
-    # as PID 1 (see ENTRYPOINT below + the migration comment at the top\
-    # of this file), but external wrappers pinned to /usr/bin/tini will\
-    # crash with 'tini: No such file or directory' on startup. The shim\
-    # symlinks /usr/bin/tini -> /init so legacy wrappers exec the right\
-    # PID-1 reaper without behavior change for users on the current\
-    # ENTRYPOINT. Safe to drop once the affected catalogs are updated.\
-    ln -sf /init /usr/bin/tini
+    rm /tmp/s6-overlay-*.tar.xz /tmp/s6-overlay.sha256
+
+# #34192 / #66679: backward-compat shim for orchestration templates that
+# still reference the legacy /usr/bin/tini entrypoint (Hostinger's
+# 'Hermes WebUI' catalog, NAS compose projects that preserve an old
+# entrypoint on image update, etc.). A plain symlink to /init made the
+# path exist, but forwarded tini flags like `-g` into s6-overlay's
+# rc.init as the container CMD (`rc.init: 91: -g: not found`) and
+# boot-looped any `restart: unless-stopped` deploy. The shim strips the
+# tini CLI surface, then exec's /init + main-wrapper — see
+# docker/tini-shim.sh. Safe to drop once the affected catalogs are
+# updated.
+COPY --chmod=0755 docker/tini-shim.sh /usr/bin/tini
 
 RUN useradd -u 10000 -m -d /opt/data hermes
-COPY .fuxi-build-tools/uv .fuxi-build-tools/uvx /usr/local/bin/
+COPY --chmod=0755 .fuxi-build-tools/uv .fuxi-build-tools/uvx /usr/local/bin/
 
 # Node 22 LTS: copy the node binary plus the bundled npm + corepack JS
 # installs from the upstream image.  npm and npx are recreated as symlinks
@@ -95,9 +184,39 @@ COPY ui-tui/packages/hermes-ink/ ui-tui/packages/hermes-ink/
 # `file:` workspace dependency (same pattern as hermes-ink above).
 COPY apps/shared/ apps/shared/
 
-# `npm_config_install_links=false` forces npm to install `file:` deps as symlinks.
-RUN npm install --prefer-offline --no-audit && \
-    npx playwright install --with-deps chromium --only-shell && \
+# `npm_config_install_links=false` forces npm to install `file:` deps as
+# symlinks instead of copies.  This is the default since npm 10+, which is
+# what the image ships now (via the node:22 source stage).  We set it
+# explicitly anyway as defense-in-depth: the previous Debian-bundled npm
+# 9.x defaulted to install-as-copy, which produced a hidden
+# node_modules/.package-lock.json that permanently disagreed with the root
+# lock on the @hermes/ink entry, tripped the TUI launcher's
+# `_tui_need_npm_install()` check on every startup, and triggered a
+# runtime `npm install` that then failed with EACCES.  Keeping the env
+# guards against a future regression if the source npm version changes.
+ENV npm_config_install_links=false
+
+RUN npm install --prefer-offline --no-audit --fetch-retries=5 && \
+    for i in 1 2 3; do \
+        npx playwright install --with-deps chromium --only-shell && break || \
+        { [ "$i" = 3 ] && exit 1; echo "playwright install failed (attempt $i); retrying in 10s"; sleep 10; }; \
+    done && \
+    npm cache clean --force
+
+# ---------- Photon iMessage sidecar deps (baked, NS-606) ----------
+# The photon plugin's Node sidecar needs its own node_modules
+# (spectrum-ts). The install tree is immutable at runtime, so a lazy
+# `npm ci` on first connect would hit EROFS — bake the deps here instead
+# (deterministic installs, NS-559). The patch script is copied alongside
+# the manifests because package.json's postinstall runs it, which also
+# means the spectrum-ts patch is applied at build time. Layer-cached:
+# only re-runs when the sidecar manifests/patch change.
+COPY plugins/platforms/photon/sidecar/package.json \
+     plugins/platforms/photon/sidecar/package-lock.json \
+     plugins/platforms/photon/sidecar/patch-spectrum-mixed-attachments.mjs \
+     plugins/platforms/photon/sidecar/
+RUN cd plugins/platforms/photon/sidecar && \
+    npm ci --no-audit --fetch-retries=5 && \
     npm cache clean --force
 
 # ---------- Layer-cached Python dependency install ----------
@@ -111,7 +230,7 @@ RUN npm install --prefer-offline --no-audit && \
 # frontend stats the readme path during dep resolution, so we `touch` an
 # empty placeholder — the real README is restored by `COPY . .` below.
 #
-# `uv sync --frozen --no-install-project --extra all --extra messaging`
+# `uv sync --frozen --no-install-project --extra all --extra messaging --extra otlp`
 # installs the deps reachable through the composite `[all]` extra
 # (handpicked set intended for the production image — excludes `[dev]`),
 # plus gateway messaging adapters that should work in the published image
@@ -123,6 +242,10 @@ RUN npm install --prefer-offline --no-audit && \
 # Provider packages (anthropic, bedrock, azure-identity) are included
 # so Docker users can use these providers without requiring runtime
 # lazy-install access to PyPI (often blocked in containerized envs).
+#
+# The [otlp] extra contains the SDK/exporter imported by Hermes when Gateway
+# Health export is enabled. Collector and observability-backend dependencies
+# remain external and are not part of the Hermes production image.
 #
 # The hindsight memory provider's client (hindsight-client) is baked in
 # for the same reason: it lazy-installs into /opt/hermes/.venv at first
@@ -144,7 +267,7 @@ RUN touch ./README.md
 RUN UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/ \
     UV_HTTP_TIMEOUT=120 \
     UV_CONCURRENT_DOWNLOADS=1 \
-    uv sync --frozen --no-install-project --extra all --extra messaging --extra anthropic --extra bedrock --extra azure-identity --extra hindsight --extra matrix
+    uv sync --frozen --no-install-project --extra all --extra messaging --extra otlp --extra anthropic --extra bedrock --extra azure-identity --extra hindsight --extra matrix
 
 # ---------- Frontend build (cached independently from Python source) ----------
 # Copy only the frontend source trees first so that Python-only changes don't
@@ -158,9 +281,9 @@ RUN cd web && npm run build && \
 # ---------- Source code ----------
 # .dockerignore excludes node_modules, so the installs above survive.
 # --link decouples this layer from parents for cache purposes; --chmod bakes
-# the final readable permissions at copy time. FUXI keeps hermes ownership so
-# managed profile/runtime paths do not fall back to startup-time chmod fixes.
-COPY --link --chown=hermes:hermes --chmod=a+rX,go-w . .
+# the final read-only permissions at copy time. Runtime-writable dependencies
+# use the durable target under /opt/data rather than mutating this source tree.
+COPY --link --chmod=a+rX,go-w . .
 
 # ---------- Permissions ----------
 # Link hermes-agent itself (editable). Deps are already installed in the
