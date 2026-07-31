@@ -12,17 +12,27 @@ import os
 import hmac
 import hashlib
 import ipaddress
+import logging
+import time
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urlparse, urlunparse
 
 import httpx
 
+from hermes_constants import get_hermes_home
 from tools.registry import registry, tool_error, tool_result
 from utils import is_truthy_value
 
 DEFAULT_ENDPOINT = "fuxi-contract-tools"
+CONTRACT_LEDGER_NAME = "fuxi-contract-call-ledger.jsonl"
+CONNECT_TIMEOUT_CAP_SECONDS = 5.0
+TLS_TIMEOUT_CAP_SECONDS = 10.0
+TTFB_TIMEOUT_CAP_SECONDS = 15.0
+MIN_TIMEOUT_SECONDS = 0.001
+logger = logging.getLogger(__name__)
 DEFAULT_ALLOWED_TOOLS = frozenset(
     {
         "fuxi.director.goal.read",
@@ -163,6 +173,173 @@ def _jwt_endpoint() -> str:
 
 def _build_transport() -> httpx.BaseTransport | None:
     return None
+
+
+class _ContractCallTrace:
+    def __init__(self, timeout_seconds: float) -> None:
+        self.started_ns = time.monotonic_ns()
+        self.timeout_seconds = timeout_seconds
+        self.events: dict[str, int] = {}
+
+    def __call__(self, name: str, info: dict[str, Any]) -> None:
+        self.events[name] = time.monotonic_ns()
+        if not name.endswith(".started"):
+            return
+        remaining = self.remaining_seconds()
+        if name in {"connection.connect_tcp.started", "connection.connect_unix_socket.started"}:
+            info["timeout"] = min(CONNECT_TIMEOUT_CAP_SECONDS, remaining)
+        elif name == "connection.start_tls.started":
+            info["timeout"] = min(TLS_TIMEOUT_CAP_SECONDS, remaining)
+        elif name in {
+            "http11.receive_response_headers.started",
+            "http2.receive_response_headers.started",
+        }:
+            self._set_request_timeout(info, "read", min(TTFB_TIMEOUT_CAP_SECONDS, remaining))
+        elif name in {
+            "http11.receive_response_body.started",
+            "http2.receive_response_body.started",
+        }:
+            self._set_request_timeout(info, "read", remaining)
+        elif name.endswith(".send_request_headers.started") or name.endswith(".send_request_body.started"):
+            self._set_request_timeout(info, "write", remaining)
+
+    def remaining_seconds(self) -> float:
+        elapsed_seconds = (time.monotonic_ns() - self.started_ns) / 1_000_000_000
+        return max(MIN_TIMEOUT_SECONDS, self.timeout_seconds - elapsed_seconds)
+
+    def elapsed_ms(self, now_ns: int | None = None) -> float:
+        finished_ns = now_ns if now_ns is not None else time.monotonic_ns()
+        return _milliseconds(finished_ns - self.started_ns)
+
+    def duration_ms(self, phase: str, now_ns: int) -> float | None:
+        started = self.events.get(f"{phase}.started")
+        if started is None:
+            return None
+        finished = self.events.get(f"{phase}.complete") or self.events.get(f"{phase}.failed")
+        if finished is None:
+            finished = now_ns
+        return _milliseconds(finished - started)
+
+    def ttfb_ms(self, now_ns: int) -> float | None:
+        phases = ("http11.receive_response_headers", "http2.receive_response_headers")
+        for phase in phases:
+            if f"{phase}.started" not in self.events:
+                continue
+            finished = self.events.get(f"{phase}.complete") or self.events.get(f"{phase}.failed")
+            return _milliseconds((finished or now_ns) - self.started_ns)
+        return None
+
+    def timeout_class(self) -> str:
+        if self.elapsed_ms() >= self.timeout_seconds * 1000:
+            return "total_timeout"
+        if self._phase_failed("connection.start_tls") or self._phase_in_progress("connection.start_tls"):
+            return "tls_timeout"
+        if self._phase_failed("connection.connect_tcp") or self._phase_in_progress("connection.connect_tcp"):
+            return "connect_timeout"
+        if (
+            self._phase_failed("http11.receive_response_headers")
+            or self._phase_failed("http2.receive_response_headers")
+            or self._phase_in_progress("http11.receive_response_headers")
+            or self._phase_in_progress("http2.receive_response_headers")
+        ):
+            return "ttfb_timeout"
+        return "total_timeout"
+
+    def _phase_failed(self, phase: str) -> bool:
+        return f"{phase}.failed" in self.events
+
+    def _phase_in_progress(self, phase: str) -> bool:
+        return (
+            f"{phase}.started" in self.events
+            and f"{phase}.complete" not in self.events
+            and f"{phase}.failed" not in self.events
+        )
+
+    @staticmethod
+    def _set_request_timeout(info: dict[str, Any], key: str, value: float) -> None:
+        request = info.get("request")
+        extensions = getattr(request, "extensions", None)
+        if not isinstance(extensions, dict):
+            return
+        timeouts = extensions.get("timeout")
+        if isinstance(timeouts, dict):
+            timeouts[key] = value
+
+
+def _milliseconds(nanoseconds: int) -> float:
+    return round(max(0, nanoseconds) / 1_000_000, 3)
+
+
+def _ledger_path() -> Path:
+    return get_hermes_home() / "logs" / CONTRACT_LEDGER_NAME
+
+
+def _safe_target_url(url: str) -> str:
+    parsed = urlparse(url)
+    hostname = parsed.hostname or ""
+    if ":" in hostname and not hostname.startswith("["):
+        hostname = f"[{hostname}]"
+    netloc = hostname
+    if parsed.port is not None:
+        netloc = f"{netloc}:{parsed.port}"
+    return urlunparse((parsed.scheme, netloc, parsed.path, "", "", ""))
+
+
+def _append_contract_ledger(
+    *,
+    tool_name: str,
+    target_url: str,
+    http_status: int | None,
+    error_class: str | None,
+    trace: _ContractCallTrace,
+    request_id: str,
+) -> None:
+    now_ns = time.monotonic_ns()
+    record = {
+        "tool_name": tool_name,
+        "target_url": _safe_target_url(target_url),
+        "http_status": http_status,
+        "error_class": error_class,
+        # httpcore does not expose DNS as a separate trace phase.
+        "dns_ms": None,
+        "connect_ms": trace.duration_ms("connection.connect_tcp", now_ns),
+        "tls_ms": trace.duration_ms("connection.start_tls", now_ns),
+        "ttfb_ms": trace.ttfb_ms(now_ns),
+        "total_ms": trace.elapsed_ms(now_ns),
+        "request_id": request_id,
+    }
+    path = _ledger_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = (json.dumps(record, ensure_ascii=True, separators=(",", ":")) + "\n").encode("utf-8")
+    flags = os.O_APPEND | os.O_CREAT | os.O_WRONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        os.write(descriptor, line)
+        os.fchmod(descriptor, 0o600)
+    finally:
+        os.close(descriptor)
+
+
+def _record_contract_call(**kwargs: Any) -> None:
+    try:
+        _append_contract_ledger(**kwargs)
+    except OSError as exc:
+        logger.error("Could not append FUXI contract call ledger: %s", exc.__class__.__name__)
+
+
+def _safe_upstream_error(data: Any) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        return {"error": "non_json_upstream_error"}
+    result: dict[str, Any] = {}
+    for key in ("error", "code", "reason"):
+        value = data.get(key)
+        if isinstance(value, (str, int, float, bool)):
+            result[key] = value
+    return result or {"error": "unclassified_upstream_error"}
 
 
 def _validate_base_url(base_url: str) -> str | None:
@@ -335,7 +512,11 @@ def fuxi_contract_call(args: dict[str, Any], **_kw) -> str:
         request_body = _request_body(endpoint, payload, args)
     url = _contract_url(base_url, endpoint, tool_name)
     transport = _build_transport()
-    headers = {"Content-Type": "application/json"}
+    request_id = str(uuid.uuid4())
+    headers = {
+        "Content-Type": "application/json",
+        "X-FUXI-HERMES-REQUEST-ID": request_id,
+    }
     if _auth_mode() == "hmac":
         secret = _hmac_secret()
         if not secret:
@@ -363,25 +544,84 @@ def fuxi_contract_call(args: dict[str, Any], **_kw) -> str:
         headers["Authorization"] = f"Bearer {token}"
         request_content = request_body
 
+    trace = _ContractCallTrace(timeout_seconds)
+    ledger_args = {
+        "tool_name": tool_name,
+        "target_url": url,
+        "trace": trace,
+        "request_id": request_id,
+    }
     try:
         with httpx.Client(transport=transport, timeout=timeout_seconds) as client:
             if _auth_mode() == "hmac":
-                response = client.post(url, headers=headers, content=request_content)
+                response = client.post(
+                    url,
+                    headers=headers,
+                    content=request_content,
+                    extensions={"trace": trace},
+                )
             else:
-                response = client.post(url, headers=headers, json=request_content)
+                response = client.post(
+                    url,
+                    headers=headers,
+                    json=request_content,
+                    extensions={"trace": trace},
+                )
             try:
                 data: Any = response.json()
             except ValueError:
                 data = response.text
             if response.status_code >= 400:
-                return tool_error(
-                    "http_error",
-                    status_code=response.status_code,
-                    data=data,
+                _record_contract_call(
+                    **ledger_args,
+                    http_status=response.status_code,
+                    error_class="http_error",
                 )
-            return tool_result({"success": True, "status_code": response.status_code, "data": data})
+                return tool_error(
+                    "contract_call_failed",
+                    error_class="http_error",
+                    http_status=response.status_code,
+                    upstream_error=_safe_upstream_error(data),
+                    request_id=request_id,
+                )
+            _record_contract_call(
+                **ledger_args,
+                http_status=response.status_code,
+                error_class=None,
+            )
+            return tool_result(
+                {
+                    "success": True,
+                    "status_code": response.status_code,
+                    "data": data,
+                    "request_id": request_id,
+                }
+            )
+    except httpx.TimeoutException:
+        error_class = trace.timeout_class()
+        _record_contract_call(
+            **ledger_args,
+            http_status=None,
+            error_class=error_class,
+        )
+        return tool_error(
+            "contract_call_failed",
+            error_class=error_class,
+            http_status=None,
+            request_id=request_id,
+        )
     except httpx.HTTPError as exc:
-        return tool_error("network_error", detail=str(exc))
+        _record_contract_call(
+            **ledger_args,
+            http_status=None,
+            error_class="network_error",
+        )
+        return tool_error(
+            "contract_call_failed",
+            error_class="network_error",
+            http_status=None,
+            request_id=request_id,
+        )
 
 
 FUXI_CONTRACT_CALL_SCHEMA = {
