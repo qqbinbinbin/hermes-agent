@@ -702,6 +702,20 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
     """Fetch model metadata from OpenRouter (cached for 1 hour)."""
     global _model_metadata_cache, _model_metadata_cache_time
 
+    network_mode = os.getenv("HERMES_OPENROUTER_METADATA_NETWORK", "enabled")
+    network_disabled = network_mode.strip().lower() in {
+        "disabled", "off", "false", "0", "no",
+    }
+
+    if network_disabled:
+        if _model_metadata_cache:
+            return _model_metadata_cache
+        disk_cache = _load_model_metadata_disk_cache()
+        if disk_cache:
+            _model_metadata_cache = disk_cache
+            _model_metadata_cache_time = time.time()
+        return _model_metadata_cache
+
     if not force_refresh and _model_metadata_cache and (time.time() - _model_metadata_cache_time) < _MODEL_CACHE_TTL:
         return _model_metadata_cache
 
@@ -1087,6 +1101,13 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
         # The input itself fits — this is purely an output-cap error, so reduce
         # max_tokens and retry; do NOT compress.
         "range of max_tokens should be" in error_lower
+    ) or (
+        # OpenAI-compatible gateways may report the remaining context as a
+        # subtraction expression: max_tokens > context_window - input_tokens.
+        ("max_tokens" in error_lower or "max_completion_tokens" in error_lower)
+        and "is too large" in error_lower
+        and "maximum context length" in error_lower
+        and "input tokens" in error_lower
     )
     if not is_output_cap_error:
         return None
@@ -1157,12 +1178,96 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
     _m_vllm_input = re.search(
         r'prompt contains (?:at least )?(\d+)\s*input tokens', error_lower
     )
+    if _m_vllm_input is None:
+        _m_vllm_input = re.search(
+            r'(?:your )?request has (?:at least )?(\d+)\s*input tokens',
+            error_lower,
+        )
     if _m_ctx_tok and _m_vllm_input:
         _available = int(_m_ctx_tok.group(1)) - int(_m_vllm_input.group(1))
         if _available >= 1:
             return _available
 
     return None
+
+
+def clamp_output_tokens_to_context(
+    requested_output_tokens: int,
+    estimated_input_tokens: int,
+    context_length: int,
+    *,
+    safety_reserve: int = 1024,
+) -> Optional[int]:
+    """Return an output cap that fits the estimated request context."""
+    requested = max(1, int(requested_output_tokens))
+    estimated_input = max(0, int(estimated_input_tokens))
+    context = max(0, int(context_length))
+    reserve = max(0, int(safety_reserve))
+    available = context - estimated_input - reserve
+    if available < 1:
+        return None
+    return min(requested, available)
+
+
+def clamp_request_output_to_context(
+    payload: Dict[str, Any],
+    context_length: int,
+    *,
+    safety_reserve: int = 1024,
+) -> Optional[tuple[int, int, int]]:
+    """Clamp the output cap on the final provider request payload in place."""
+    if not isinstance(payload, dict):
+        return None
+
+    output_key = None
+    requested_output = None
+    for key in ("max_output_tokens", "max_completion_tokens", "max_tokens"):
+        try:
+            value = int(payload.get(key))
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            output_key = key
+            requested_output = value
+            break
+    if output_key is None or requested_output is None:
+        return None
+
+    request_messages = payload.get("messages")
+    if not isinstance(request_messages, list):
+        request_messages = payload.get("input")
+    if not isinstance(request_messages, list):
+        request_messages = (
+            [{"role": "user", "content": request_messages}]
+            if request_messages is not None
+            else []
+        )
+    request_tools = payload.get("tools")
+    if not isinstance(request_tools, list):
+        request_tools = None
+    system_prompt = payload.get("instructions")
+    if not isinstance(system_prompt, str):
+        system_prompt = ""
+
+    estimated_input = estimate_request_tokens_rough(
+        request_messages,
+        system_prompt=system_prompt,
+        tools=request_tools,
+    )
+    safe_output = clamp_output_tokens_to_context(
+        requested_output,
+        estimated_input,
+        context_length,
+        safety_reserve=safety_reserve,
+    )
+    if safe_output is None:
+        raise ValueError(
+            "Final provider request exceeds configured context: "
+            f"estimated_input={estimated_input}, context_length={context_length}, "
+            f"safety_reserve={safety_reserve}"
+        )
+    payload[output_key] = safe_output
+    return requested_output, safe_output, estimated_input
 
 
 def is_output_cap_error(error_msg: str) -> bool:

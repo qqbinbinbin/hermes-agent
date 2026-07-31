@@ -1539,70 +1539,6 @@ def _get_platform_tools(
             default_off.remove("x_search")
         enabled_toolsets -= default_off
 
-    # Recover non-configurable platform toolsets (e.g. discord, feishu_doc,
-    # feishu_drive).  These are part of the platform's default composite but
-    # absent from CONFIGURABLE_TOOLSETS, so they can't appear in the TUI
-    # checklist or in a user-saved config.  Must run in BOTH branches —
-    # otherwise saving via `hermes tools` (which flips has_explicit_config
-    # to True) silently drops them.
-    _plat_info = PLATFORMS.get(platform)
-    _default_ts = _plat_info["default_toolset"] if _plat_info else f"hermes-{platform}"
-    platform_tool_universe = set(resolve_toolset(_default_ts))
-    configurable_tool_universe = set()
-    for ck in configurable_keys:
-        configurable_tool_universe.update(resolve_toolset(ck))
-    claimed = set()
-    for ts_key in enabled_toolsets:
-        claimed.update(resolve_toolset(ts_key))
-    skip = configurable_keys | plugin_ts_keys | platform_default_keys
-    skip |= {k for k in TOOLSETS if k.startswith("hermes-")}
-    skip |= set(_DEFAULT_OFF_TOOLSETS) - {platform}
-    for ts_key, ts_def in TOOLSETS.items():
-        if ts_key in skip:
-            continue
-        if ts_def.get("includes"):
-            continue
-        # Posture toolsets (e.g. ``coding``) are session-level selections made
-        # by agent/coding_context.py — not per-platform capabilities to recover.
-        if ts_def.get("posture"):
-            continue
-        ts_tools = set(resolve_toolset(ts_key))
-        if not ts_tools or not ts_tools.issubset(platform_tool_universe):
-            continue
-        if ts_tools.issubset(configurable_tool_universe):
-            continue
-        if not ts_tools.issubset(claimed):
-            enabled_toolsets.add(ts_key)
-            claimed.update(ts_tools)
-
-    # Plugin toolsets: enabled by default unless explicitly disabled, or
-    # unless the toolset is in _DEFAULT_OFF_TOOLSETS (e.g. spotify —
-    # shipped as a bundled plugin but user must opt in via `hermes tools`
-    # so we don't ship 7 Spotify tool schemas to users who don't use it).
-    # A plugin toolset is "known" for a platform once `hermes tools`
-    # has been saved for that platform (tracked via known_plugin_toolsets).
-    # Unknown plugins default to enabled; known-but-absent = disabled.
-    if plugin_ts_keys:
-        known_map = config.get("known_plugin_toolsets", {})
-        known_for_platform = set(known_map.get(platform, []))
-        for pts in plugin_ts_keys:
-            if pts in toolset_names:
-                # Explicitly listed in config — enabled
-                enabled_toolsets.add(pts)
-            elif pts in _DEFAULT_OFF_TOOLSETS:
-                # Opt-in plugin toolset — stay off until user picks it
-                continue
-            elif pts not in known_for_platform:
-                # New plugin not yet seen by hermes tools — default enabled
-                enabled_toolsets.add(pts)
-            # else: known but not in config = user disabled it
-
-    # Context-engine tools are runtime-provided by the active engine, so they
-    # are not part of any static platform composite. When a non-default engine
-    # is selected, keep its recovery/status tools available even after a user
-    # saves an explicit platform toolset list. Preserve the explicit empty-list
-    # contract: selecting no configurable tools means no context-engine tools
-    # either unless the user adds ``context_engine`` manually later.
     context_cfg = config.get("context") or {}
     if not isinstance(context_cfg, dict):
         context_cfg = {}
@@ -1612,6 +1548,78 @@ def _get_platform_tools(
         and isinstance(platform_toolsets.get(platform), list)
         and not toolset_names
     )
+    # Explicit empty selections are an operator-authored deny-all contract for
+    # the platform. Do not recover non-configurable platform toolsets, inject
+    # plugin/MCP defaults, or add runtime context-engine tools behind that
+    # choice. FUXI profile runtimes rely on ``platform_toolsets.api_server: []``
+    # to disable OpenAI-compatible tool calling entirely.
+    if explicit_empty_selection:
+        enabled_toolsets = set()
+    else:
+        # Recover non-configurable platform toolsets (e.g. discord, feishu_doc,
+        # feishu_drive).  These are part of the platform's default composite but
+        # absent from CONFIGURABLE_TOOLSETS, so they can't appear in the TUI
+        # checklist or in a user-saved config.  Must run in BOTH branches —
+        # otherwise saving via `hermes tools` (which flips has_explicit_config
+        # to True) silently drops them.
+        _plat_info = PLATFORMS.get(platform)
+        _default_ts = _plat_info["default_toolset"] if _plat_info else f"hermes-{platform}"
+        platform_tool_universe = set(resolve_toolset(_default_ts))
+        configurable_tool_universe = set()
+        for ck in configurable_keys:
+            configurable_tool_universe.update(resolve_toolset(ck))
+        claimed = set()
+        for ts_key in enabled_toolsets:
+            claimed.update(resolve_toolset(ts_key))
+        skip = configurable_keys | plugin_ts_keys | platform_default_keys
+        skip |= {k for k in TOOLSETS if k.startswith("hermes-")}
+        skip |= set(_DEFAULT_OFF_TOOLSETS) - {platform}
+        for ts_key, ts_def in TOOLSETS.items():
+            if ts_key in skip:
+                continue
+            if ts_def.get("includes"):
+                continue
+            # Posture toolsets (e.g. ``coding``) are session-level selections made
+            # by agent/coding_context.py — not per-platform capabilities to recover.
+            if ts_def.get("posture"):
+                continue
+            ts_tools = set(resolve_toolset(ts_key))
+            if not ts_tools or not ts_tools.issubset(platform_tool_universe):
+                continue
+            if ts_tools.issubset(configurable_tool_universe):
+                continue
+            if not ts_tools.issubset(claimed):
+                enabled_toolsets.add(ts_key)
+                claimed.update(ts_tools)
+
+        # Plugin toolsets: enabled by default unless explicitly disabled, or
+        # unless the toolset is in _DEFAULT_OFF_TOOLSETS (e.g. spotify —
+        # shipped as a bundled plugin but user must opt in via `hermes tools`
+        # so we don't ship 7 Spotify tool schemas to users who don't use it).
+        # A plugin toolset is "known" for a platform once `hermes tools`
+        # has been saved for that platform (tracked via known_plugin_toolsets).
+        # Unknown plugins default to enabled; known-but-absent = disabled.
+        if plugin_ts_keys:
+            known_map = config.get("known_plugin_toolsets", {})
+            known_for_platform = set(known_map.get(platform, []))
+            for pts in plugin_ts_keys:
+                if pts in toolset_names:
+                    # Explicitly listed in config — enabled
+                    enabled_toolsets.add(pts)
+                elif pts in _DEFAULT_OFF_TOOLSETS:
+                    # Opt-in plugin toolset — stay off until user picks it
+                    continue
+                elif pts not in known_for_platform:
+                    # New plugin not yet seen by hermes tools — default enabled
+                    enabled_toolsets.add(pts)
+                # else: known but not in config = user disabled it
+
+    # Context-engine tools are runtime-provided by the active engine, so they
+    # are not part of any static platform composite. When a non-default engine
+    # is selected, keep its recovery/status tools available even after a user
+    # saves an explicit platform toolset list. Preserve the explicit empty-list
+    # contract: selecting no configurable tools means no context-engine tools
+    # either unless the user adds ``context_engine`` manually later.
     if context_engine_name and context_engine_name != "compressor" and not explicit_empty_selection:
         enabled_toolsets.add("context_engine")
 
@@ -1629,21 +1637,22 @@ def _get_platform_tools(
     # If the platform explicitly lists one or more MCP server names, treat that
     # as an allowlist. Otherwise include every globally enabled MCP server.
     # Special sentinel: "no_mcp" in the toolset list disables all MCP servers.
-    enabled_mcp_servers = enabled_mcp_server_names(config)
-    # Allow "no_mcp" sentinel to opt out of all MCP servers for this platform
-    if "no_mcp" in toolset_names:
-        explicit_mcp_servers = set()
-        enabled_toolsets.update(explicit_passthrough - enabled_mcp_servers - {"no_mcp"})
-    else:
-        explicit_mcp_servers = explicit_passthrough & enabled_mcp_servers
-        enabled_toolsets.update(explicit_passthrough - enabled_mcp_servers)
-    if include_default_mcp_servers:
-        if explicit_mcp_servers or "no_mcp" in toolset_names:
-            enabled_toolsets.update(explicit_mcp_servers)
+    if not explicit_empty_selection:
+        enabled_mcp_servers = enabled_mcp_server_names(config)
+        # Allow "no_mcp" sentinel to opt out of all MCP servers for this platform
+        if "no_mcp" in toolset_names:
+            explicit_mcp_servers = set()
+            enabled_toolsets.update(explicit_passthrough - enabled_mcp_servers - {"no_mcp"})
         else:
-            enabled_toolsets.update(enabled_mcp_servers)
-    else:
-        enabled_toolsets.update(explicit_mcp_servers)
+            explicit_mcp_servers = explicit_passthrough & enabled_mcp_servers
+            enabled_toolsets.update(explicit_passthrough - enabled_mcp_servers)
+        if include_default_mcp_servers:
+            if explicit_mcp_servers or "no_mcp" in toolset_names:
+                enabled_toolsets.update(explicit_mcp_servers)
+            else:
+                enabled_toolsets.update(enabled_mcp_servers)
+        else:
+            enabled_toolsets.update(explicit_mcp_servers)
 
     # Honor agent.disabled_toolsets from config.yaml — allows users to
     # globally suppress specific toolsets (e.g. "memory") across all

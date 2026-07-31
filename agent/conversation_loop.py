@@ -49,6 +49,7 @@ from agent.message_sanitization import (
 )
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
+    clamp_request_output_to_context,
     estimate_messages_tokens_rough,
     estimate_request_tokens_rough,
     get_context_length_from_provider_error,
@@ -1071,6 +1072,11 @@ def run_conversation(
                 # isn't sent with stale, primary-shaped reasoning fields.
                 agent._reapply_reasoning_echo_for_provider(api_messages)
                 api_kwargs = agent._build_api_kwargs(api_messages)
+                _context_length = getattr(
+                    getattr(agent, "context_compressor", None),
+                    "context_length",
+                    None,
+                )
                 if agent._force_ascii_payload:
                     _sanitize_structure_non_ascii(api_kwargs)
                 if agent.api_mode == "codex_responses":
@@ -1213,6 +1219,23 @@ def run_conversation(
                         _use_streaming = False
 
                 def _perform_api_call(next_api_kwargs):
+                    if _context_length:
+                        _budget = clamp_request_output_to_context(
+                            next_api_kwargs,
+                            _context_length,
+                        )
+                        if _budget is not None:
+                            _requested_output, _safe_output, _estimated_input = _budget
+                            if _safe_output < _requested_output:
+                                logger.info(
+                                    "%sProactively clamped final output tokens %s -> %s "
+                                    "(estimated_input=%s context=%s)",
+                                    agent.log_prefix,
+                                    _requested_output,
+                                    _safe_output,
+                                    _estimated_input,
+                                    _context_length,
+                                )
                     if _use_streaming:
                         return agent._interruptible_streaming_api_call(
                             next_api_kwargs, on_first_delta=_stop_spinner

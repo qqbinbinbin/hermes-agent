@@ -1129,6 +1129,18 @@ class TestFetchModelMetadata:
         mock_get.assert_not_called()
         assert result["test/model"]["context_length"] == 12345
 
+    def test_disabled_openrouter_metadata_network_never_calls_http(
+        self, tmp_path, monkeypatch
+    ):
+        self._reset_cache()
+        self._isolate_disk_cache(monkeypatch, tmp_path)
+        monkeypatch.setenv("HERMES_OPENROUTER_METADATA_NETWORK", "disabled")
+
+        with patch("agent.model_metadata.requests.get") as mock_get:
+            assert fetch_model_metadata(force_refresh=True) == {}
+
+        mock_get.assert_not_called()
+
     def test_force_refresh_bypasses_fresh_disk_cache(self, tmp_path, monkeypatch):
         self._reset_cache()
         cache_path = self._isolate_disk_cache(monkeypatch, tmp_path)

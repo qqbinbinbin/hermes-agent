@@ -182,6 +182,25 @@ def test_get_platform_tools_context_engine_respects_explicit_empty_selection():
     assert "context_engine" not in enabled
 
 
+def test_get_platform_tools_api_server_explicit_empty_selection_blocks_nonconfigurable_recovery():
+    """Regression guard for FUXI profile runtimes on Hermes v0.18.
+
+    ``platform_toolsets.api_server: []`` is an explicit operator choice used by
+    FUXI to disable OpenAI-compatible tool calling for profile runtimes whose
+    upstream provider rejects ``tool_choice=auto``. The recovery path for
+    non-configurable toolsets must not re-add platform-adjacent toolsets like
+    ``fuxi_contract`` behind that explicit empty selection.
+    """
+    config = {
+        "toolsets": ["hermes-cli", "fuxi_contract"],
+        "platform_toolsets": {"api_server": []},
+    }
+
+    enabled = _get_platform_tools(config, "api_server", include_default_mcp_servers=False)
+
+    assert enabled == set()
+
+
 def test_get_platform_tools_default_whatsapp_includes_web():
     enabled = _get_platform_tools({}, "whatsapp")
 

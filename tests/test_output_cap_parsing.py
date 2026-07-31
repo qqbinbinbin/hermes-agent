@@ -1,8 +1,57 @@
 import pytest
 from agent.model_metadata import (
+    clamp_request_output_to_context,
+    clamp_output_tokens_to_context,
     is_output_cap_error,
     parse_available_output_tokens_from_error,
 )
+
+
+class TestProactiveOutputBudgetClamp:
+    def test_clamps_customer_request_before_provider_call(self):
+        assert clamp_output_tokens_to_context(65536, 65844, 131072) == 64204
+
+    def test_preserves_governed_small_output_limit(self):
+        assert clamp_output_tokens_to_context(4096, 65844, 131072) == 4096
+
+    def test_input_overflow_has_no_valid_output_budget(self):
+        assert clamp_output_tokens_to_context(4096, 131072, 131072) is None
+
+    def test_clamps_the_final_middleware_rewritten_payload(self):
+        payload = {
+            "messages": [{"role": "user", "content": "x" * 259360}],
+            "tools": [{"type": "function", "function": {"name": "lookup"}}],
+            "max_tokens": 65536,
+        }
+
+        result = clamp_request_output_to_context(payload, 131072)
+
+        assert result is not None
+        requested, safe, estimated_input = result
+        assert requested == 65536
+        assert safe == 65186
+        assert estimated_input == 64862
+        assert payload["max_tokens"] == 65186
+
+    def test_preserves_final_governed_output_limit(self):
+        payload = {
+            "messages": [{"role": "user", "content": "x" * 259360}],
+            "max_completion_tokens": 4096,
+        }
+
+        result = clamp_request_output_to_context(payload, 131072)
+
+        assert result == (4096, 4096, 64848)
+        assert payload["max_completion_tokens"] == 4096
+
+    def test_final_payload_input_overflow_fails_closed(self):
+        payload = {
+            "messages": [{"role": "user", "content": "x" * 524288}],
+            "max_tokens": 4096,
+        }
+
+        with pytest.raises(ValueError, match="Final provider request exceeds configured context"):
+            clamp_request_output_to_context(payload, 131072)
 
 
 class TestParseOpenRouterOutputCap:
@@ -151,6 +200,14 @@ class TestParseVllmTokenBasedOutputCap:
                "you requested 4096 output tokens and your prompt contains "
                "100000 input tokens, for a total of 104096 tokens.")
         assert parse_available_output_tokens_from_error(msg) == 31072
+
+    def test_vllm_subtraction_format_from_openai_compatible_gateway(self):
+        msg = (
+            "HTTP 400: 'max_tokens' or 'max_completion_tokens' is too large: "
+            "65536. This model's maximum context length is 131072 tokens and "
+            "your request has 65844 input tokens (65536 > 131072 - 65844)."
+        )
+        assert parse_available_output_tokens_from_error(msg) == 65228
 
     def test_vllm_retry_fits_inside_window(self):
         # The retried cap plus the reported input must fit in the window.
