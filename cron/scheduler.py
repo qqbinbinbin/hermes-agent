@@ -3473,6 +3473,37 @@ def run_job(
                 job_id, _mcp_exc,
             )
 
+        director_gate = None
+        director_invocation = None
+        profile_name = str(
+            job.get("profile_name")
+            or os.getenv("HERMES_PROFILE_NAME")
+            or os.getenv("API_SERVER_MODEL_NAME")
+            or ""
+        ).strip()
+        if profile_name.startswith("director@"):
+            from cron.director_restore_gate import DirectorRestoreGate
+
+            director_gate = DirectorRestoreGate()
+
+            cron_provider = str(
+                (_cfg.get("cron") or {}).get("provider")
+                if isinstance(_cfg.get("cron") or {}, dict)
+                else ""
+            ).strip().lower()
+            if cron_provider in {"", "builtin", "in-process", "inprocess"}:
+                cron_provider = "builtin"
+            job_for_gate = {
+                **job,
+                "profile_name": profile_name,
+                "provider": runtime.get("provider") or job.get("provider"),
+                "model": model,
+            }
+            director_invocation = director_gate.before_model_call(
+                job_for_gate,
+                cron_provider=cron_provider,
+            )
+
         agent = AIAgent(
             model=model,
             api_key=runtime.get("api_key"),
@@ -3569,10 +3600,23 @@ def run_job(
         _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
         _inactivity_timeout = False
         try:
-            if _cron_inactivity_limit is None:
+            try:
+                if _cron_inactivity_limit is None:
                 # Unlimited — no inactivity watchdog, but a one-shot still
                 # needs its run_claim heartbeat, so poll instead of blocking.
-                if _is_oneshot:
+                    if _is_oneshot:
+                        result = None
+                        while True:
+                            done, _ = concurrent.futures.wait(
+                                {_cron_future}, timeout=_POLL_INTERVAL,
+                            )
+                            if done:
+                                result = _cron_future.result()
+                                break
+                            _heartbeat_run_claim_if_due()
+                    else:
+                        result = _cron_future.result()
+                else:
                     result = None
                     while True:
                         done, _ = concurrent.futures.wait(
@@ -3582,29 +3626,26 @@ def run_job(
                             result = _cron_future.result()
                             break
                         _heartbeat_run_claim_if_due()
-                else:
-                    result = _cron_future.result()
-            else:
-                result = None
-                while True:
-                    done, _ = concurrent.futures.wait(
-                        {_cron_future}, timeout=_POLL_INTERVAL,
+                        # Agent still running — check inactivity.
+                        _idle_secs = 0.0
+                        if hasattr(agent, "get_activity_summary"):
+                            try:
+                                _act = agent.get_activity_summary()
+                                _idle_secs = _act.get("seconds_since_activity", 0.0)
+                            except Exception:
+                                pass
+                        if _idle_secs >= _cron_inactivity_limit:
+                            _inactivity_timeout = True
+                            break
+            except Exception as model_exc:
+                if director_invocation is not None:
+                    director_gate.after_model_call(
+                        director_invocation,
+                        {"failed": True, "error": type(model_exc).__name__},
+                        status="failed",
+                        error_code=type(model_exc).__name__,
                     )
-                    if done:
-                        result = _cron_future.result()
-                        break
-                    _heartbeat_run_claim_if_due()
-                    # Agent still running — check inactivity.
-                    _idle_secs = 0.0
-                    if hasattr(agent, "get_activity_summary"):
-                        try:
-                            _act = agent.get_activity_summary()
-                            _idle_secs = _act.get("seconds_since_activity", 0.0)
-                        except Exception:
-                            pass
-                    if _idle_secs >= _cron_inactivity_limit:
-                        _inactivity_timeout = True
-                        break
+                raise
         except Exception:
             _cron_pool.shutdown(wait=False, cancel_futures=True)
             raise
@@ -3642,6 +3683,13 @@ def run_job(
 
         # Guard against non-dict returns from run_conversation under error conditions
         if not isinstance(result, dict):
+            if director_invocation is not None:
+                director_gate.after_model_call(
+                    director_invocation,
+                    {"failed": True, "error": "non_dict_result"},
+                    status="failed",
+                    error_code="non_dict_result",
+                )
             raise RuntimeError(
                 f"agent.run_conversation returned {type(result).__name__} instead of dict: {result!r}"
             )
@@ -3667,12 +3715,26 @@ def run_job(
                 or final_response_text
                 or "agent reported failure"
             )
+            if director_invocation is not None:
+                director_gate.after_model_call(
+                    director_invocation,
+                    result,
+                    status="failed",
+                    error_code="agent_reported_failure",
+                )
             raise RuntimeError(_err_text)
         if max_iteration_summary:
             logger.warning(
                 "Job '%s' reached the iteration limit but produced a final fallback response; "
                 "delivering the response instead of failing the cron run",
                 job_name,
+            )
+
+        if director_invocation is not None:
+            director_gate.after_model_call(
+                director_invocation,
+                result,
+                status="succeeded",
             )
 
         final_response = result.get("final_response", "") or ""
