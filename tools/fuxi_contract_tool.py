@@ -457,12 +457,30 @@ def _request_body(endpoint: str, payload: dict[str, Any], args: dict[str, Any]) 
 
 
 def _business_contract_body(payload: dict[str, Any], args: dict[str, Any]) -> dict[str, Any]:
+    tenant_id = _tenant_id() or str(args.get("tenant_id") or payload.get("tenant_id") or "").strip()
+    employee_id = _employee_id() or str(args.get("employee_id") or payload.get("employee_id") or "").strip()
+    raw_context = payload.get("fuxiToolContext")
+    context = dict(raw_context) if isinstance(raw_context, dict) else {}
+    if tenant_id:
+        context["tenantId"] = tenant_id
+    if employee_id:
+        context["workerId"] = employee_id
+    caller_session = str(
+        context.get("chatSessionId")
+        or args.get("caller_session")
+        or payload.get("caller_session")
+        or _caller_session()
+    ).strip()
+    governed_input = dict(payload)
+    if context:
+        governed_input["fuxiToolContext"] = context
     return {
         "action": str(args.get("tool") or "").strip(),
-        "tenant_id": str(args.get("tenant_id") or payload.get("tenant_id") or _tenant_id()).strip(),
-        "employee_id": str(args.get("employee_id") or payload.get("employee_id") or _employee_id()).strip(),
-        "caller_session": str(args.get("caller_session") or payload.get("caller_session") or _caller_session()).strip(),
-        "input": payload,
+        "tenant_id": tenant_id,
+        "employee_id": employee_id,
+        "caller_session": caller_session,
+        "fuxiToolContext": context,
+        "input": governed_input,
     }
 
 

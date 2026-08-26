@@ -172,7 +172,17 @@ def test_contract_tool_posts_business_contract_payload_with_hmac(monkeypatch):
         "tenant_id": "11111111-2222-3333-4444-555555555555",
         "employee_id": "22222222-3333-4444-5555-666666666666",
         "caller_session": "session-1",
-        "input": {"question": "policy"},
+        "fuxiToolContext": {
+            "tenantId": "11111111-2222-3333-4444-555555555555",
+            "workerId": "22222222-3333-4444-5555-666666666666",
+        },
+        "input": {
+            "question": "policy",
+            "fuxiToolContext": {
+                "tenantId": "11111111-2222-3333-4444-555555555555",
+                "workerId": "22222222-3333-4444-5555-666666666666",
+            },
+        },
     }
 
 
@@ -313,6 +323,59 @@ def test_business_contract_hmac_allows_internal_http_base_url(monkeypatch):
     assert seen["url"] == "http://host.docker.internal:8000/functions/v1/business-contract-tools"
     assert seen["signature"].startswith("sha256=")
     assert seen["body"]["tenant_id"] == "11111111-2222-3333-4444-555555555555"
+
+
+def test_business_contract_hmac_uses_profile_identity_over_model_payload(monkeypatch):
+    monkeypatch.setenv("HERMES_PROFILE_CONTRACT_TOOLS_ENABLED", "1")
+    monkeypatch.setenv("FUXI_CONTRACT_BASE_URL", "http://host.docker.internal:8000/functions/v1")
+    monkeypatch.setenv("FUXI_CONTRACT_ENDPOINT", "business-contract-tools")
+    monkeypatch.setenv("FUXI_CONTRACT_AUTH_MODE", "hmac")
+    monkeypatch.setenv("HERMES_INGEST_HMAC_KEY", "hmac-secret")
+    monkeypatch.setenv("FUXI_CONTRACT_TENANT_ID", "11111111-2222-3333-4444-555555555555")
+    monkeypatch.setenv("FUXI_CONTRACT_EMPLOYEE_ID", "22222222-3333-4444-5555-666666666666")
+    monkeypatch.setenv("FUXI_CONTRACT_TOOL_ALLOWLIST", "kb.parse_document")
+
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(200, json={"ok": True})
+
+    from tools import fuxi_contract_tool
+
+    monkeypatch.setattr(
+        fuxi_contract_tool,
+        "_build_transport",
+        lambda: httpx.MockTransport(handler),
+    )
+
+    result = json.loads(
+        fuxi_contract_tool.fuxi_contract_call(
+            {
+                "tool": "kb.parse_document",
+                "employee_id": "model-invented-worker",
+                "payload": {
+                    "tenant_id": "model-invented-tenant",
+                    "employee_id": "fuxi__tenant__kb_ingestor",
+                    "caller_session": "model-runtime-session",
+                    "fuxiToolContext": {
+                        "tenantId": "model-invented-tenant",
+                        "workerId": "fuxi__tenant__kb_ingestor",
+                        "chatSessionId": "33333333-4444-5555-6666-777777777777",
+                    },
+                },
+            }
+        )
+    )
+
+    assert result["success"] is True
+    body = seen["body"]
+    assert body["tenant_id"] == "11111111-2222-3333-4444-555555555555"
+    assert body["employee_id"] == "22222222-3333-4444-5555-666666666666"
+    assert body["caller_session"] == "33333333-4444-5555-6666-777777777777"
+    assert body["fuxiToolContext"]["tenantId"] == body["tenant_id"]
+    assert body["fuxiToolContext"]["workerId"] == body["employee_id"]
+    assert body["input"]["fuxiToolContext"] == body["fuxiToolContext"]
 
 
 def test_business_contract_hmac_rejects_external_http_base_url(monkeypatch):
