@@ -1,0 +1,8 @@
+{
+  "upstreamRepository": "https://github.com/NousResearch/hermes-agent.git",
+  "sourcePath": "skills/research/llm-wiki",
+  "reviewedTrees": [
+    {"commit": "aa45aa88182071c4b1f0c4bd643d298f45f69281", "tree": "491a4ba88477dd870379b0c10fe1751153b56d7c", "decision": "中文改造所依据的原生技能，保留其摄入、查询、审查与维护方法。"},
+    {"commit": "c32e0acb0ec59d53ac964007c75630e098bcd045", "tree": "0051b4298f0b840fbeec290c1706a58676940fa7", "decision": "已核对上游唯一差异：可选 Obsidian 同步的 WorkingDirectory 改为 %h/wiki。客户托管技能不安装外部同步服务，不合并该服务示例。"}
+  ]
+}

@@ -253,11 +253,25 @@ jobs:
   # Outputs ``needs-json`` — a compact ``{job_name: result}`` dict — so
   # the live comment poller can list failed jobs in the PR comment.
   # ─────────────────────────────────────────────────────────────────────
+  fuxi-wiki-upstream:
+    name: 中文 Wiki 上游变更审阅
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: 验证更新检查器
+        run: node --test scripts/check-fuxi-wiki-upstream.test.mjs
+      - name: 未审阅的原生技能变化禁止静默通过
+        run: node scripts/check-fuxi-wiki-upstream.mjs --ref HEAD
+
   all-checks-pass:
     name: All required checks pass
     needs:
       - detect
       - tests
+      - fuxi-wiki-upstream
       - lint
       - js-tests
       - e2e-desktop
