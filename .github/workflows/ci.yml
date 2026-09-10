@@ -262,7 +262,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: 验证更新检查器
-        run: node --test scripts/check-fuxi-wiki-upstream.test.mjs
+        run: node --test scripts/check-fuxi-wiki-upstream.test.mjs scripts/check-fuxi-wiki-ci.test.mjs
       - name: 未审阅的原生技能变化禁止静默通过
         run: node scripts/check-fuxi-wiki-upstream.mjs --ref HEAD
 
@@ -307,6 +307,10 @@ jobs:
           with open('$GITHUB_OUTPUT', 'a') as f:
               f.write(f'needs-json={json.dumps(compact)}\n')
           failed = [name for name, info in needs.items() if info['result'] == 'failure']
+          # This mandatory lane must run successfully, even if removed from needs.
+          for required in ('fuxi-wiki-upstream',):
+              if needs.get(required, {}).get('result') != 'success' and required not in failed:
+                  failed.append(required)
           for name, info in sorted(needs.items()):
               result = info['result']
               icon = '✅' if result in ('success', 'skipped') else '❌'
