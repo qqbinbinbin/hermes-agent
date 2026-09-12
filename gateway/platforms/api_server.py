@@ -3927,11 +3927,19 @@ class APIServerAdapter(BasePlatformAdapter):
             session_id = provided_session_id
             try:
                 db = await self._ensure_session_db_async()
-                if db is not None:
-                    history = await asyncio.to_thread(db.get_messages_as_conversation, session_id)
+                if db is None:
+                    raise RuntimeError("session_store_unavailable")
+                # Follow only native compression continuations, not arbitrary
+                # branches. A stable client ID must not reload the old prefix.
+                session_id = await asyncio.to_thread(db.get_compression_tip, session_id)
+                if not isinstance(session_id, str) or not session_id:
+                    raise RuntimeError("session_continuation_invalid")
+                history = await asyncio.to_thread(db.get_messages_as_conversation, session_id)
             except Exception as e:
-                logger.warning("Failed to load session history for %s: %s", session_id, e)
-                history = []
+                logger.warning("Session continuity unavailable: %s", type(e).__name__)
+                return web.json_response(
+                    _openai_error("session_history_unavailable"), status=503,
+                )
         else:
             # Derive a stable session ID from the conversation fingerprint so
             # that consecutive messages from the same Open WebUI (or similar)

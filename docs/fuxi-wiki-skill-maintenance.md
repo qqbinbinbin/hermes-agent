@@ -53,3 +53,17 @@ CI 汇总现在单独要求 Wiki 必检任务实际为 success，取消、跳过
 FUXI 隔离验证入口为 `node services/executor-gateway/src/verify-kb-wiki-native-skill.mjs /path/to/hermes-agent`。它复制完整技能目录至一次性 profile，通过真实 `skills_list` / `skill_view` 验证发现、全文和资源，再验证缺失/损坏拒绝；不带模型凭证、不调用模型，结束后移除临时目录。
 
 本次不包含生产 profile 替换、镜像重建或真实生成授权。Gateway 源码已直接读取中文技能，不再组合旧 policy；生产仍需受控分发完整目录并核对实际加载哈希。隔离全文加载不等于自主暂停/续接、完整业务或费用验收通过。
+
+## 原生会话续接验证（2026-09-10）
+
+带认证的 Chat Completions 会话复用现有 `SessionDB.get_compression_tip`，读取压缩后的最新历史；
+原生分支、工具子会话不作为压缩续接。数据库或历史读取失败返回503，不再静默清空历史后调用模型。
+新会话仍可创建；没有 session header 的无状态入口不改变。
+
+`python tests/gateway/test_native_chat_resume_offline.py` 使用真实本地HTTP与临时SQLite，
+仅模型入口替换成合成适配器。覆盖数据库重开、压缩恢复、分支隔离、认证和读取失败，
+并证明两个合成回合中的四次供应商请求及token分别累计。该数据不是账单，也不证明费用下降。
+运行环境需已有aiohttp等Hermes运行依赖；可在既有镜像中只读挂载本仓库运行，禁网、不重建镜像。
+
+稳定会话是基础能力，不自动重试失败任务，不构成后台调度的让出协议，也不代替Skill决定下一步。
+FUXI业务验收仍须另验证未完成单元进度、预算边界与无人工追加指令的完整任务。
