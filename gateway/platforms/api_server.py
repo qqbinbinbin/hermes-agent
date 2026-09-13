@@ -226,6 +226,16 @@ def _request_reasoning_config(model_options: Any) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _request_max_tokens(model_options: Any) -> Optional[int]:
+    """Apply an explicit request budget without changing the profile default."""
+    if not isinstance(model_options, dict) or "max_tokens" not in model_options:
+        return None
+    value = model_options["max_tokens"]
+    if type(value) is not int or value <= 0:
+        raise ValueError("max_tokens_must_be_positive_integer")
+    return value
+
+
 def _request_service_tier(model_options: Any) -> Any:
     """Return a per-request service_tier override or _REQUEST_OPTION_MISSING."""
     if not isinstance(model_options, dict):
@@ -2488,6 +2498,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if request_reasoning_config is not None:
             reasoning_config = request_reasoning_config
         request_service_tier = _request_service_tier(model_options)
+        request_max_tokens = _request_max_tokens(model_options)
 
         request_model = _clean_request_string(requested_model)
         request_provider = _clean_request_string(requested_provider)
@@ -2713,6 +2724,8 @@ class APIServerAdapter(BasePlatformAdapter):
         }
         if request_service_tier is not _REQUEST_OPTION_MISSING:
             agent_kwargs["service_tier"] = request_service_tier
+        if request_max_tokens is not None:
+            agent_kwargs["max_tokens"] = request_max_tokens
 
         agent = AIAgent(**agent_kwargs)
         agent._hermes_api_runtime = {
