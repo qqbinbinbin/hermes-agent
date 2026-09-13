@@ -262,7 +262,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: 验证更新检查器
-        run: node --test scripts/check-fuxi-wiki-upstream.test.mjs scripts/check-fuxi-wiki-ci.test.mjs
+        run: node --test scripts/check-fuxi-wiki-upstream.test.mjs scripts/check-fuxi-wiki-ci.test.mjs scripts/check-fuxi-wiki-receipts.test.mjs
       - name: 未审阅的原生技能变化禁止静默通过
         run: node scripts/check-fuxi-wiki-upstream.mjs --ref HEAD
 
