@@ -6124,6 +6124,7 @@ def run_conversation(
                     except Exception:
                         pass
 
+                tool_batch_start = len(messages) - 1
                 agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
 
                 if getattr(agent, "_incremental_persistence_failed", False):
@@ -6156,6 +6157,25 @@ def run_conversation(
                                 agent.stream_delta_callback(None)
                             except Exception:
                                 pass
+                    break
+
+                # Only durable tool results may request a native transport finish.
+                # This never fabricates a provider response or revives an interrupt.
+                from hermes_cli.middleware import resolve_tool_batch_completion
+                tool_batch_completion = None
+                if not agent._interrupt_requested:
+                    tool_batch_completion = resolve_tool_batch_completion(
+                        messages=messages[tool_batch_start:], task_id=effective_task_id,
+                        turn_id=turn_id,
+                    )
+                if tool_batch_completion and not agent._interrupt_requested:
+                    if api_call_count >= agent.max_iterations or agent.iteration_budget.remaining <= 0:
+                        _turn_exit_reason = "budget_exhausted"
+                        final_response = ""
+                        failed = True
+                        break
+                    _turn_exit_reason = "native_tool_completion"
+                    final_response = tool_batch_completion
                     break
 
                 # Reset per-turn retry counters after successful tool

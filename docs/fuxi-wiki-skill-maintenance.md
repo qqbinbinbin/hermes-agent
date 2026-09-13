@@ -1,5 +1,17 @@
 # 中文 Wiki 技能的维护与验收
 
+## 2026-09-13：原生回执运输收尾
+
+原生 `tool_batch_completion` 扩展允许可信插件在工具结果持久化后结束回合，避免为运输确认额外
+请求模型。该接口不生成知识、不代定页面、不批准发布；中文 Skill 的语义主权不变。
+FUXI 文件权限插件只在单独的真实回执写入匹配当前权限与身份时请求收尾，平台独立校验照旧。
+取消、持久化失败、预算耗尽均不转成功；没有插件时原生循环保持原行为。
+
+维护回归：`tests/agent/test_tool_batch_completion.py`（实际边界 AST 与合同）及
+`tests/agent/test_tool_batch_completion_integration.py`（真实 AIAgent 循环、模拟供应商）。
+后者应在断网、临时 HERMES_HOME 中运行，不能访问客户 profile 或调用真实模型。
+本次仅源码与隔离验证，不能据此宣称已发布或客户 Wiki 已完成。
+
 ## 唯一维护位置
 
 本 Hermes 分支仓库的 `skills/research/llm-wiki-fuxi/SKILL.md` 是完整中文改造版，技能标识为 `llm-wiki-fuxi`。它不是附加政策，也不依赖 FUXI 在每次调用时拼接英文原文与外部 policy。

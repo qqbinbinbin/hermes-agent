@@ -21,6 +21,7 @@ TOOL_REQUEST_MIDDLEWARE = "tool_request"
 TOOL_EXECUTION_MIDDLEWARE = "tool_execution"
 LLM_REQUEST_MIDDLEWARE = "llm_request"
 LLM_EXECUTION_MIDDLEWARE = "llm_execution"
+TOOL_BATCH_COMPLETION_MIDDLEWARE = "tool_batch_completion"
 
 # Back-compat aliases for older PoC branches that used API terminology.
 API_REQUEST_MIDDLEWARE = LLM_REQUEST_MIDDLEWARE
@@ -31,7 +32,33 @@ VALID_MIDDLEWARE: set[str] = {
     TOOL_EXECUTION_MIDDLEWARE,
     LLM_REQUEST_MIDDLEWARE,
     LLM_EXECUTION_MIDDLEWARE,
+    TOOL_BATCH_COMPLETION_MIDDLEWARE,
 }
+
+
+def resolve_tool_batch_completion(*, messages, task_id, turn_id):
+    """Allow a trusted plugin to finish after durable tool results, not an API reply.
+
+    This is a transport boundary, not application acceptance. The plugin must
+    verify its scoped submission and every result in the completed batch.
+    Multiple or malformed decisions cannot end the loop. Absent plugins leave
+    the ordinary provider loop unchanged.
+    """
+    if not _has_middleware(TOOL_BATCH_COMPLETION_MIDDLEWARE):
+        return None
+    results = _invoke_middleware(
+        TOOL_BATCH_COMPLETION_MIDDLEWARE, messages=deepcopy(messages),
+        task_id=task_id, turn_id=turn_id,
+    )
+    if len(results) != 1:
+        return None
+    decision = results[0]
+    if (not isinstance(decision, dict) or set(decision) != {"action", "message"}
+            or decision["action"] != "complete"
+            or not isinstance(decision["message"], str)
+            or not decision["message"].strip() or len(decision["message"]) > 500):
+        return None
+    return decision["message"]
 
 
 @dataclass
