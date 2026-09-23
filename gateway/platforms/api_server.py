@@ -1904,6 +1904,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ("POST", "/api/jobs/{job_id}/resume", self._handle_resume_job),
             ("POST", "/api/jobs/{job_id}/run", self._handle_run_job),
             ("POST", "/v1/runs", self._handle_runs),
+            ("GET", "/v1/runs/lookup", self._handle_lookup_run),
             ("GET", "/v1/runs/{run_id}", self._handle_get_run),
             ("GET", "/v1/runs/{run_id}/events", self._handle_run_events),
             ("POST", "/v1/runs/{run_id}/approval", self._handle_run_approval),
@@ -2996,6 +2997,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "responses_streaming": True,
                 "run_submission": True,
                 "run_persistent_idempotency": True,
+                "run_key_lookup": True,
                 "run_session_continuity": True,
                 "run_status": True,
                 "run_events_sse": True,
@@ -6681,6 +6683,26 @@ class APIServerAdapter(BasePlatformAdapter):
             headers=response_headers,
         )
 
+    async def _handle_lookup_run(self, request: "web.Request") -> "web.Response":
+        """Read an accepted request without resubmitting possibly billed work."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        key = request.headers.get("Idempotency-Key")
+        if not isinstance(key, str) or not key.strip() or len(key) > 200:
+            return web.json_response(_openai_error("Invalid Idempotency-Key"), status=400)
+        from gateway.platforms.api_run_store import detached_run_status
+        try:
+            store = self._native_run_store()
+            saved = store.get_by_key(key)
+        except Exception:
+            return web.json_response(_openai_error("run_persistence_unavailable"), status=503)
+        if saved is None:
+            return web.json_response(_openai_error("Run not found", code="run_not_found"), status=404)
+        run_id = saved["run_id"]
+        live = self._run_statuses.get(run_id) if self._native_run_owners.get(run_id) is store else None
+        return web.json_response(live or detached_run_status(saved))
+
     async def _handle_get_run(self, request: "web.Request") -> "web.Response":
         """GET /v1/runs/{run_id} — return pollable run status for external UIs."""
         auth_err = self._check_auth(request)
@@ -6859,6 +6881,13 @@ class APIServerAdapter(BasePlatformAdapter):
             return auth_err
 
         run_id = request.match_info["run_id"]
+        owner = getattr(self, "_native_run_owners", {}).get(run_id)
+        if owner is not None:
+            try:
+                if owner is not self._native_run_store():
+                    return web.json_response(_openai_error("Run not found", code="run_not_found"), status=404)
+            except Exception:
+                return web.json_response(_openai_error("run_persistence_unavailable"), status=503)
         agent = self._active_run_agents.get(run_id)
         task = self._active_run_tasks.get(run_id)
 

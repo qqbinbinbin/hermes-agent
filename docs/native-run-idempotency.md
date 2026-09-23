@@ -28,3 +28,9 @@ FUXI 不得利用该接口替 Hermes 规划 Wiki 主题；Skill 继续负责语�
 能力发现显式返回`run_persistent_idempotency`与`run_session_continuity`。会话续接头参与提交身份摘要。续接不是自动重试授权，也不会使未知运行态自动重启。
 
 FUXI仓库`scripts/runtime/probe-hermes-native-resume.py`使用真实临时会话数据库和合成agent验证历史、compression tip和拒绝路径。候选模块仅在隔离进程加载，未覆盖容器文件，供应商请求为0。
+
+## 提交响应丢失后的只读查询
+
+`GET /v1/runs/lookup` 携带原 `Idempotency-Key`，仅查询当前已认证 profile 的持久化记录，不创建任务。能力标记为 `run_key_lookup`。不存在返回404、存储不可用503；调用方不得据此自动重发可能已经计费的请求。
+
+已有原生任务的停止入口同样核对当前profile所有权，异profile返回404且不调用interrupt。FUXI实际adapter合成探针先复现缺失检查，再验证拒绝；9项存储测试及会话/只读查询探针通过。未发布，供应商请求为0。

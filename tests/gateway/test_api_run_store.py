@@ -33,6 +33,21 @@ class RunStoreTest(unittest.TestCase):
         with self.assertRaises(RunIdentityConflict):
             self.store.claim("attempt", {"input": "two"})
 
+    def test_key_lookup_never_creates_a_run(self):
+        self.assertIsNone(self.store.get_by_key("missing"))
+        created, first = self.store.claim("missing", {"input": "synthetic"})
+        self.assertTrue(created)
+        self.assertEqual(self.store.get_by_key("missing")["run_id"], first["run_id"])
+        self.assertIsNone(self.store.get_by_key("different"))
+
+    def test_key_lookup_survives_restart_without_claim(self):
+        _, first = self.store.claim("lookup", {})
+        other = APIRunStore(self.temp.name)
+        try:
+            self.assertEqual(other.get_by_key("lookup")["run_id"], first["run_id"])
+        finally:
+            other.close()
+
     def test_profile_stores_are_isolated(self):
         _, first = self.store.claim("attempt", {})
         other = APIRunStore(Path(self.temp.name) / "other-profile")

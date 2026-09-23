@@ -69,6 +69,14 @@ class APIRunStore:
         with self._lock:
             self._conn.close()
 
+    def get_by_key(self, key):
+        key_hash = hashlib.sha256(key.encode()).hexdigest()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT status_json FROM api_runs WHERE request_key=?", (key_hash,),
+            ).fetchone()
+            return json.loads(row[0]) if row else None
+
 
 def detached_run_status(status):
     """A surviving record is not proof an interrupted executor is still alive."""
