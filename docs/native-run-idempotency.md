@@ -20,3 +20,11 @@ FUXI 不得利用该接口替 Hermes 规划 Wiki 主题；Skill 继续负责语�
 隔离验证：`python3 -m unittest tests.gateway.test_api_run_store -v`。
 另以实际 API adapter 加合成 agent 验证 202、独立运行、重复提交、冲突、
 存储失效以及新 adapter 查询。未调用供应商，未更改生产 profile 或发布代码。
+
+## 原生会话续接
+
+受认证的runs请求可携带`X-Hermes-Session-Id`，使用与chat入口相同的会话数据库及compression tip恢复真实历史。不由FUXI拼装旧消息，不创建第二套历史存储。请求体session_id若与头不符，或同时指定conversation_history/previous_response_id，返回400；历史数据库不可用返回503，不静默开启无历史的新回合。
+
+能力发现显式返回`run_persistent_idempotency`与`run_session_continuity`。会话续接头参与提交身份摘要。续接不是自动重试授权，也不会使未知运行态自动重启。
+
+FUXI仓库`scripts/runtime/probe-hermes-native-resume.py`使用真实临时会话数据库和合成agent验证历史、compression tip和拒绝路径。候选模块仅在隔离进程加载，未覆盖容器文件，供应商请求为0。

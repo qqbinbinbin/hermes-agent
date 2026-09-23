@@ -2995,6 +2995,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 "responses_api": True,
                 "responses_streaming": True,
                 "run_submission": True,
+                "run_persistent_idempotency": True,
+                "run_session_continuity": True,
                 "run_status": True,
                 "run_events_sse": True,
                 "run_stop": True,
@@ -3203,6 +3205,17 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.warning("Failed to load session history for %s: %s", session_id, exc)
             return []
+
+    async def _restore_api_session_history(self, session_id: str):
+        """Restore the native compression tip without silently starting empty."""
+        db = await self._ensure_session_db_async()
+        if db is None:
+            raise RuntimeError("session_store_unavailable")
+        session_id = await asyncio.to_thread(db.get_compression_tip, session_id)
+        if not isinstance(session_id, str) or not session_id:
+            raise RuntimeError("session_continuation_invalid")
+        history = await asyncio.to_thread(db.get_messages_as_conversation, session_id)
+        return session_id, history
 
     async def _handle_list_sessions(self, request: "web.Request") -> "web.Response":
         """GET /api/sessions — list persisted Hermes sessions."""
@@ -3939,15 +3952,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
             session_id = provided_session_id
             try:
-                db = await self._ensure_session_db_async()
-                if db is None:
-                    raise RuntimeError("session_store_unavailable")
-                # Follow only native compression continuations, not arbitrary
-                # branches. A stable client ID must not reload the old prefix.
-                session_id = await asyncio.to_thread(db.get_compression_tip, session_id)
-                if not isinstance(session_id, str) or not session_id:
-                    raise RuntimeError("session_continuation_invalid")
-                history = await asyncio.to_thread(db.get_messages_as_conversation, session_id)
+                session_id, history = await self._restore_api_session_history(session_id)
             except Exception as e:
                 logger.warning("Session continuity unavailable: %s", type(e).__name__)
                 return web.json_response(
@@ -6315,6 +6320,23 @@ class APIServerAdapter(BasePlatformAdapter):
                     conversation_history.append({"role": msg["role"], "content": str(content)})
 
         session_id = body.get("session_id") or stored_session_id
+        provided_session_id = request.headers.get("X-Hermes-Session-Id")
+        if provided_session_id:
+            from gateway.session import _is_path_unsafe
+
+            if not self._api_key:
+                return web.json_response(_openai_error("Session continuation requires API key authentication"), status=403)
+            if (not isinstance(provided_session_id, str)
+                    or len(provided_session_id) > self._MAX_SESSION_HEADER_LEN
+                    or re.search(r'[\r\n\x00]', provided_session_id)
+                    or _is_path_unsafe(provided_session_id)
+                    or (session_id and session_id != provided_session_id)
+                    or raw_history or previous_response_id):
+                return web.json_response(_openai_error("Invalid session continuation"), status=400)
+            try:
+                session_id, conversation_history = await self._restore_api_session_history(provided_session_id)
+            except Exception:
+                return web.json_response(_openai_error("session_history_unavailable"), status=503)
         route = self._resolve_route(body.get("model"))
         agent_overrides = _request_agent_overrides(body, virtual_model=self._model_name)
         selection_error = self._request_route_conflict_error(
@@ -6339,6 +6361,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 store = self._native_run_store()
                 created, saved = store.claim(idempotency_key, {
                     "body": body, "session_key": gateway_session_key,
+                    "session_continuity": provided_session_id,
                 })
             except RunIdentityConflict:
                 return web.json_response(_openai_error("run_idempotency_conflict"), status=409)
