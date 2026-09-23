@@ -6117,6 +6117,18 @@ class APIServerAdapter(BasePlatformAdapter):
     _RUN_STREAM_TTL = 300  # seconds before orphaned runs are swept
     _RUN_STATUS_TTL = 3600  # seconds to retain terminal run status for polling
 
+    def _native_run_store(self):
+        from hermes_cli.config import get_hermes_home
+        from gateway.platforms.api_run_store import APIRunStore
+
+        home = str(get_hermes_home().resolve())
+        if not hasattr(self, "_native_run_stores"):
+            self._native_run_stores = {}
+            self._native_run_owners = {}
+        if home not in self._native_run_stores:
+            self._native_run_stores[home] = APIRunStore(home)
+        return self._native_run_stores[home]
+
     def _set_run_status(self, run_id: str, status: str, **fields: Any) -> Dict[str, Any]:
         """Update pollable run status without exposing private agent objects."""
         now = time.time()
@@ -6129,6 +6141,9 @@ class APIServerAdapter(BasePlatformAdapter):
         })
         current.setdefault("created_at", fields.pop("created_at", now))
         current.update(fields)
+        store = getattr(self, "_native_run_owners", {}).get(run_id)
+        if store is not None:
+            store.update(current)
         self._run_statuses[run_id] = current
         return current
 
@@ -6313,6 +6328,27 @@ class APIServerAdapter(BasePlatformAdapter):
             return web.json_response(_openai_error(selection_error), status=400)
 
         run_id = f"run_{uuid.uuid4().hex}"
+        idempotency_key = request.headers.get("Idempotency-Key")
+        if idempotency_key is not None:
+            from gateway.platforms.api_run_store import RunIdentityConflict, detached_run_status
+
+            if (not isinstance(idempotency_key, str) or not idempotency_key.strip()
+                    or len(idempotency_key) > 200):
+                return web.json_response(_openai_error("Invalid Idempotency-Key"), status=400)
+            try:
+                store = self._native_run_store()
+                created, saved = store.claim(idempotency_key, {
+                    "body": body, "session_key": gateway_session_key,
+                })
+            except RunIdentityConflict:
+                return web.json_response(_openai_error("run_idempotency_conflict"), status=409)
+            except Exception:
+                return web.json_response(_openai_error("run_persistence_unavailable"), status=503)
+            run_id = saved["run_id"]
+            if not created:
+                status = self._run_statuses.get(run_id) or detached_run_status(saved)
+                return web.json_response({**status, "reused": True}, status=202)
+            self._native_run_owners[run_id] = store
         session_id = session_id or run_id
         # Approval queues gate host-side tool execution and must be isolated
         # per API run.  Client-provided session IDs and memory session keys are
@@ -6630,6 +6666,15 @@ class APIServerAdapter(BasePlatformAdapter):
 
         run_id = request.match_info["run_id"]
         status = self._run_statuses.get(run_id)
+        if status is None:
+            from gateway.platforms.api_run_store import detached_run_status
+
+            try:
+                # The store is selected from the authenticated profile context.
+                saved = self._native_run_store().get(run_id)
+                status = detached_run_status(saved) if saved else None
+            except Exception:
+                return web.json_response(_openai_error("run_persistence_unavailable"), status=503)
         if status is None:
             return web.json_response(
                 _openai_error(f"Run not found: {run_id}", code="run_not_found"),
