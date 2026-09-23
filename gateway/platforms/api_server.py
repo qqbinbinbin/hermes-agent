@@ -6132,7 +6132,7 @@ class APIServerAdapter(BasePlatformAdapter):
     def _set_run_status(self, run_id: str, status: str, **fields: Any) -> Dict[str, Any]:
         """Update pollable run status without exposing private agent objects."""
         now = time.time()
-        current = self._run_statuses.get(run_id, {})
+        current = dict(self._run_statuses.get(run_id, {}))
         current.update({
             "object": "hermes.run",
             "run_id": run_id,
@@ -6666,6 +6666,13 @@ class APIServerAdapter(BasePlatformAdapter):
 
         run_id = request.match_info["run_id"]
         status = self._run_statuses.get(run_id)
+        owner = getattr(self, "_native_run_owners", {}).get(run_id)
+        if owner is not None:
+            try:
+                if owner is not self._native_run_store():
+                    status = None
+            except Exception:
+                return web.json_response(_openai_error("run_persistence_unavailable"), status=503)
         if status is None:
             from gateway.platforms.api_run_store import detached_run_status
 
