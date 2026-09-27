@@ -2998,6 +2998,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_submission": True,
                 "run_persistent_idempotency": True,
                 "run_key_lookup": True,
+                "run_absolute_deadline": True,
                 "run_session_continuity": True,
                 "run_status": True,
                 "run_events_sse": True,
@@ -6270,6 +6271,16 @@ class APIServerAdapter(BasePlatformAdapter):
         if not raw_input:
             return web.json_response(_openai_error("Missing 'input' field"), status=400)
 
+        deadline_at = body.get("deadline_at")
+        if deadline_at is not None:
+            import math
+
+            if (isinstance(deadline_at, bool)
+                    or not isinstance(deadline_at, (int, float))
+                    or not math.isfinite(deadline_at)
+                    or deadline_at <= time.time()):
+                return web.json_response(_openai_error("Invalid or expired deadline_at"), status=400)
+
         user_message = raw_input if isinstance(raw_input, str) else (raw_input[-1].get("content", "") if isinstance(raw_input, list) else "")
         if not user_message:
             return web.json_response(_openai_error("No user message found in input"), status=400)
@@ -6424,6 +6435,18 @@ class APIServerAdapter(BasePlatformAdapter):
         # profile scope). Capture now and re-enter inside the task/executor.
         request_profile = _api_request_profile.get()
 
+        def _deadline_expired():
+            # Stop the existing agent, not the asyncio wrapper: cancelling the
+            # wrapper alone would leave its executor thread running unobserved.
+            self._stopping_run_ids.add(run_id)
+            self._set_run_status(run_id, "stopping", stop_reason="deadline_exceeded")
+            agent = self._active_run_agents.get(run_id)
+            if agent is not None:
+                agent.interrupt("Run absolute deadline exceeded")
+
+        deadline_handle = (loop.call_later(max(0, deadline_at - time.time()), _deadline_expired)
+                           if deadline_at is not None else None)
+
         async def _run_and_close():
             try:
                 self._set_run_status(run_id, "running")
@@ -6452,6 +6475,8 @@ class APIServerAdapter(BasePlatformAdapter):
                         route=route,
                     )
                 self._active_run_agents[run_id] = agent
+                if deadline_at is not None and time.time() >= deadline_at:
+                    _deadline_expired()
 
                 def _approval_notify(approval_data: Dict[str, Any]) -> None:
                     event = dict(approval_data or {})
@@ -6514,7 +6539,7 @@ class APIServerAdapter(BasePlatformAdapter):
                                 session_id=session_id or "",
                             )
                             register_gateway_notify(approval_session_key, _approval_notify)
-                            r = agent.run_conversation(
+                            r = {"final_response": ""} if run_id in self._stopping_run_ids else agent.run_conversation(
                                 user_message=user_message,
                                 conversation_history=conversation_history,
                                 task_id=effective_task_id,
@@ -6550,6 +6575,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     self._set_run_status(
                         run_id,
                         "cancelled",
+                        usage=usage,
                         last_event="run.cancelled",
                     )
                 # Check for structured failure (non-retryable client errors like
@@ -6567,6 +6593,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         run_id,
                         "failed",
                         error=error_msg,
+                        usage=usage,
                         last_event="run.failed",
                     )
                 else:
@@ -6643,6 +6670,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 except Exception:
                     pass
             finally:
+                if deadline_handle is not None:
+                    deadline_handle.cancel()
                 # If the asyncio wrapper is cancelled (for example via
                 # /stop), the executor thread can still be blocked waiting
                 # on an approval Event.  Unregistering here releases those
