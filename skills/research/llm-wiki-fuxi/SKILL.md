@@ -1,7 +1,7 @@
 ---
 name: llm-wiki-fuxi
 description: "维护持久化中文知识库：自主摄入来源、组织实体与概念、增量更新关联页面、查询并审查来源忠实性。用于 FUXI 本地知识空间，不替代解析插件或平台发布权限。"
-version: 1.0.5
+version: 1.0.6
 author: Hermes Agent 与 FUXI 维护者
 license: MIT
 platforms: [linux, macos, windows]
@@ -130,6 +130,10 @@ sources: [实际来源路径]
 
 类型与目录保持一致：`entities/` 对应 `entity`，`concepts/` 对应 `concept`，`processes/` 对应 `process`，`comparisons/` 对应 `comparison`，`queries/` 对应 `query`。
 来源引用和当前合同要求的内部 factRefs 与实际断言对应；多来源综合保留段落级出处，不能把引用全部挂到无关页或日志来冒充业务覆盖。
+
+托管环境中，可读取的证据分片与可发布的来源页是两类文件。阅读目录的 `RAW` 是取证输入，`PUBLISHED_SOURCE` 是实际可见的来源包装页；语义页 `sources` 填写对应包装页的相对路径（含 `.md`），来源 Wikilink 指向该可见页。正文仍保留实际 Sheet、单元格坐标和内部 factRefs；不是把证据分片改成来源页，也不是删除精确出处。多来源时只引用实际支持该页断言的授权来源，不从允许列表任意选一项。格式示例见 `references/chinese-examples.md`。
+
+若返回 `allowedSourcePaths` 与 `invalidSourcePaths`，先核对来源身份，再自行修正元数据。列表标为截断时回查完整阅读目录，不把前 32 项当全部来源；不得猜测绝对路径、重读整本文件或要求平台替你改正文。
 实体页介绍对象、关键事实与关系；概念页说明定义、现有知识和未决问题；比较页并列范围、证据及差异，无据时不强行给结论。
 标签先在 `SCHEMA.md` 登记。适用时用 `confidence`、`contested`、`contradictions` 标明不确定性，不用高置信度掩盖单来源或冲突。
 页面保持可扫描，过长时由你按主题拆分并保留完整清单；不能为了行数上限截掉成员。关联应有业务意义，不为凑链接数造页面。

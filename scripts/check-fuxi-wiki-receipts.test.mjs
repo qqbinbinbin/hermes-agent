@@ -30,3 +30,15 @@ test('Chinese Skill owns the review reason and corrects receipt formatting in th
   assert.match(skill, /同一回合自行核对并修正后重交/);
   assert.match(skill, /平台不会代写你的业务判断/);
 });
+
+test('Chinese Skill distinguishes evidence reads from published source declarations', () => {
+  assert.match(skill, /`RAW` 是取证输入/);
+  assert.match(skill, /`PUBLISHED_SOURCE` 是实际可见的来源包装页/);
+  assert.match(skill, /保留实际 Sheet、单元格坐标和内部 factRefs/);
+  assert.match(skill, /不从允许列表任意选一项/);
+  assert.match(skill, /列表标为截断时回查完整阅读目录/);
+  const examples = fs.readFileSync(new URL('../skills/research/llm-wiki-fuxi/references/chinese-examples.md', import.meta.url), 'utf8');
+  assert.match(examples, /sources: \[raw\/source.md\]/);
+  assert.match(examples, /不能抄入 `sources`/);
+  assert.match(examples, /不决定是否创建主题或如何组织知识/);
+});
