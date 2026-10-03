@@ -1,7 +1,7 @@
 ---
 name: llm-wiki-fuxi
 description: "维护持久化中文知识库：自主摄入来源、组织实体与概念、增量更新关联页面、查询并审查来源忠实性。用于 FUXI 本地知识空间，不替代解析插件或平台发布权限。"
-version: 1.0.4
+version: 1.0.5
 author: Hermes Agent 与 FUXI 维护者
 license: MIT
 platforms: [linux, macos, windows]
@@ -162,7 +162,7 @@ sources: [实际来源路径]
 {"version":"kb-wiki-unit-receipt-v1","unitId":"当前单元标识","turnNonce":"本轮授权标识","semanticPaths":["concepts/topic.md"]}
 ```
 
-**完整审阅后无需修改语义页面**：这不是待续，也不是规避尚未完成的工作。按运行合同保留完整事实集合、来源路径和指纹以及与业务日志一致的中文理由，不能套用上一种简短回执省略审阅证据。
+**完整审阅后无需修改语义页面**：这不是待续，也不是规避尚未完成的工作。按运行合同保留完整事实集合、来源路径和指纹，不能套用上一种简短回执省略审阅证据。先在 `log.md` 追加本次审阅的具体中文业务理由，再将同一句理由逐字填入内部回执的 `reviewReason`；这是同一审阅决定的可追溯对账，不是要求创建新页面。若工具指出日志与回执不一致，在同一回合自行核对并修正后重交，不重新读取整本来源、不另开模型回合；平台不会代写你的业务判断。
 
 ```json
 {"version":"kb-wiki-unit-receipt-v1","unitId":"当前单元标识","turnNonce":"本轮授权标识","semanticPaths":[],"reviewDisposition":"no_semantic_change","reviewReason":"实际审阅理由，与业务日志一致","reviewedFactIds":["实际完整事实标识集合"],"reviewedSources":[{"path":"实际授权来源路径","sha256":"实际来源指纹"}]}

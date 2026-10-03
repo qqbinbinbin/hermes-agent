@@ -24,3 +24,9 @@ test('unchanged review retains explicit review evidence instead of pretending to
   assert.ok(unchanged.reviewedSources[0].path);
   assert.ok(unchanged.reviewedSources[0].sha256);
 });
+test('Chinese Skill owns the review reason and corrects receipt formatting in the same turn', () => {
+  assert.match(skill, /先在 `log\.md` 追加本次审阅的具体中文业务理由/);
+  assert.match(skill, /同一句理由逐字填入内部回执的 `reviewReason`/);
+  assert.match(skill, /同一回合自行核对并修正后重交/);
+  assert.match(skill, /平台不会代写你的业务判断/);
+});
