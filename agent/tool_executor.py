@@ -351,6 +351,18 @@ def _managed_values(
     )
 
 
+def _tool_request_budget(agent) -> dict[str, int] | None:
+    """Snapshot model-loop budget, not provider retry or billing counters."""
+    maximum = getattr(agent, "max_iterations", None)
+    used = getattr(agent, "_api_call_count", None)
+    remaining = getattr(getattr(agent, "iteration_budget", None), "remaining", None)
+    if (any(type(value) is not int for value in (maximum, used, remaining))
+            or maximum < 1 or used < 1 or used > maximum or remaining < 0):
+        return None
+    return {"max_requests": maximum, "used_requests": used,
+            "remaining_requests": min(maximum - used, remaining)}
+
+
 def _run_agent_tool_execution_middleware(
     agent,
     *,
@@ -511,6 +523,7 @@ def _run_agent_tool_execution_middleware(
             tool_call_id=tool_call_id or "",
             turn_id=getattr(agent, "_current_turn_id", "") or "",
             api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+            request_budget=_tool_request_budget(agent),
         )
 
     result, _relay_args = relay_tools.execute(

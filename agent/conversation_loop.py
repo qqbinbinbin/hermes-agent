@@ -6168,8 +6168,15 @@ def run_conversation(
                         messages=messages[tool_batch_start:], task_id=effective_task_id,
                         turn_id=turn_id,
                     )
+                if agent._interrupt_requested:
+                    interrupted = True
+                    _turn_exit_reason = "interrupted_after_tools"
+                    break
                 if tool_batch_completion and not agent._interrupt_requested:
-                    if api_call_count >= agent.max_iterations or agent.iteration_budget.remaining <= 0:
+                    # A receipt from the last permitted request needs no further
+                    # request. Reject only an over-limit grace call, not its zero
+                    # remaining counter. Persistence and interrupt guards ran above.
+                    if api_call_count > agent.max_iterations:
                         _turn_exit_reason = "budget_exhausted"
                         final_response = ""
                         failed = True

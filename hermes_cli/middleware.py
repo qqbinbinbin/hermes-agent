@@ -22,6 +22,7 @@ TOOL_EXECUTION_MIDDLEWARE = "tool_execution"
 LLM_REQUEST_MIDDLEWARE = "llm_request"
 LLM_EXECUTION_MIDDLEWARE = "llm_execution"
 TOOL_BATCH_COMPLETION_MIDDLEWARE = "tool_batch_completion"
+TOOL_EXECUTION_REQUEST_BUDGET = True
 
 # Back-compat aliases for older PoC branches that used API terminology.
 API_REQUEST_MIDDLEWARE = LLM_REQUEST_MIDDLEWARE

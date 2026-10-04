@@ -198,6 +198,8 @@ def finalize_turn(
         and (
             api_call_count < agent.max_iterations
             or normal_text_response
+            or (str(_turn_exit_reason) == "native_tool_completion"
+                and api_call_count <= agent.max_iterations and not interrupted)
         )
     )
 

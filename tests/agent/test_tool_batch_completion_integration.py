@@ -13,6 +13,20 @@ def response(content, calls=None):
 
 
 class NativeLoopCompletionTests(unittest.TestCase):
+    def test_tool_budget_snapshot_uses_existing_counters_and_rejects_invalid_values(self):
+        from agent.tool_executor import _tool_request_budget
+        agent = SimpleNamespace(max_iterations=16, _api_call_count=13,
+                                iteration_budget=SimpleNamespace(remaining=9))
+        self.assertEqual(_tool_request_budget(agent), {"max_requests": 16,
+                         "used_requests": 13, "remaining_requests": 3})
+        agent.iteration_budget.remaining = 1
+        self.assertEqual(_tool_request_budget(agent)["remaining_requests"], 1)
+        agent._api_call_count = 16
+        self.assertEqual(_tool_request_budget(agent)["remaining_requests"], 0)
+        for value in (None, True, -1, 17):
+            agent._api_call_count = value
+            self.assertIsNone(_tool_request_budget(agent))
+
     def run_case(self, decision, *, persistence_failed=False, cancel=False, max_iterations=10):
         definitions = [{"type": "function", "function": {"name": "write_file",
                        "description": "test", "parameters": {"type": "object", "properties": {}}}}]
@@ -76,12 +90,27 @@ class NativeLoopCompletionTests(unittest.TestCase):
         self.assertNotEqual(result["turn_exit_reason"], "native_tool_completion")
         self.assertEqual(agent.client.chat.completions.create.call_count, 1)
 
-    def test_iteration_limit_is_not_relabelled_as_success(self):
+    def test_receipt_on_last_allowed_request_needs_no_extra_provider_call(self):
         result, agent, _ = self.run_case([{"action": "complete", "message": "receipt submitted"}], max_iterations=1)
-        self.assertFalse(result["completed"])
+        self.assertTrue(result["completed"], repr(result))
         self.assertEqual(agent.client.chat.completions.create.call_count, 1)
-        self.assertTrue(result["failed"])
-        self.assertEqual(result["turn_exit_reason"], "budget_exhausted")
+        self.assertFalse(result["failed"])
+        self.assertEqual(result["turn_exit_reason"], "native_tool_completion")
+
+    def test_last_allowed_request_still_honors_cancel_and_persistence_failure(self):
+        for flags, reason in (({"cancel": True}, "interrupted"),
+                              ({"persistence_failed": True}, "session_persistence_failed")):
+            result, agent, _ = self.run_case(
+                [{"action": "complete", "message": "receipt submitted"}], max_iterations=1, **flags)
+            self.assertNotEqual(result["turn_exit_reason"], "native_tool_completion")
+            if reason == "session_persistence_failed":
+                self.assertEqual(result["turn_exit_reason"], reason)
+            self.assertEqual(agent.client.chat.completions.create.call_count, 1)
+
+    def test_last_request_without_trusted_receipt_is_not_completed(self):
+        result, _, _ = self.run_case([], max_iterations=1)
+        self.assertFalse(result["completed"])
+        self.assertNotEqual(result["turn_exit_reason"], "native_tool_completion")
 
 
 if __name__ == "__main__":

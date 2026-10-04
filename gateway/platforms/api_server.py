@@ -2972,6 +2972,8 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err:
             return auth_err
 
+        from hermes_cli import middleware
+
         return web.json_response({
             "object": "hermes.api_server.capabilities",
             "platform": "hermes-agent",
@@ -2999,6 +3001,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_persistent_idempotency": True,
                 "run_key_lookup": True,
                 "run_absolute_deadline": True,
+                "tool_execution_request_budget": getattr(
+                    middleware, "TOOL_EXECUTION_REQUEST_BUDGET", False
+                ) is True,
                 "run_session_continuity": True,
                 "run_status": True,
                 "run_events_sse": True,
