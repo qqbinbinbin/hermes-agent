@@ -1,0 +1,18 @@
+# Explicit prepared-source target; the default full build is untouched.
+# Use only a locally verified parent image and the prepared source manifest.
+ARG FUXI_SOURCE_PARENT_IMAGE=scratch
+FROM ${FUXI_SOURCE_PARENT_IMAGE} AS fuxi_source_delta
+ARG FUXI_SOURCE_PARENT_ID
+ARG FUXI_SOURCE_REVISION
+COPY agent/conversation_loop.py /opt/hermes/agent/conversation_loop.py
+COPY agent/tool_executor.py /opt/hermes/agent/tool_executor.py
+COPY agent/turn_finalizer.py /opt/hermes/agent/turn_finalizer.py
+COPY hermes_cli/middleware.py /opt/hermes/hermes_cli/middleware.py
+COPY gateway/platforms/api_server.py /opt/hermes/gateway/platforms/api_server.py
+COPY skills/research/llm-wiki-fuxi/SKILL.md /opt/hermes/skills/research/llm-wiki-fuxi/SKILL.md
+COPY skills/research/llm-wiki-fuxi/references/continuation.md /opt/hermes/skills/research/llm-wiki-fuxi/references/continuation.md
+COPY docker/source-delta-verify.py /opt/hermes/docker/source-delta-verify.py
+COPY .fuxi-source-delta.sha256 /opt/hermes/.fuxi-source-delta.sha256
+RUN python3 /opt/hermes/docker/source-delta-verify.py "$FUXI_SOURCE_PARENT_ID" "$FUXI_SOURCE_REVISION"
+LABEL io.fuxi.hermes.source-delta-revision=$FUXI_SOURCE_REVISION \
+      io.fuxi.hermes.source-parent-id=$FUXI_SOURCE_PARENT_ID

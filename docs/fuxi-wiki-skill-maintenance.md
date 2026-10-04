@@ -1,5 +1,30 @@
 # 中文 Wiki 技能的维护与验收
 
+## 2026-10-04：核心修复的固定源码增量准备
+
+摄入员运行镜像仍不提供 `TOOL_EXECUTION_REQUEST_BUDGET`。仅替换技能或插件不能补上核心能力。
+新增 `docker/Dockerfile.source-delta`，复用已安装且经校验的父镜像，只复制五个核心文件、
+中文技能、待续参考和校验脚本。原 `Dockerfile`、`.dockerignore` 及全量构建流程不改动。
+不下载依赖、不改变父镜像的入口、用户、工作目录或环境；不重写 `.hermes-git-sha` 冒充整库升级。
+
+准备入口只从完整 Git 提交导出固定文件，不取工作区脏文件，不携带原全量构建的 `*.md`
+排除规则，也不携带环境文件、客户资料或缓存。输出目录必须尚不存在，逐文件哈希清单由工具产生：
+
+```sh
+python3 docker/source-delta-verify.py --prepare /opt/fuxi/vendor/hermes-agent FULL_COMMIT_SHA /absolute/new/context
+```
+
+这里只准备文件，不运行 Docker 构建。候选构建必须显式选择 `fuxi_source_delta`，传入已核实的
+本地父镜像、父镜像完整 ID、源码完整提交；缺少身份或文件校验不通过就拒绝。
+构建内的 `.fuxi-source-delta.json` 记录部分更新，不是父镜像身份的独立证明。
+实际发布前仍须核对父镜像层前缀及运行配置继承、真实模块导入路径、能力入口、Skill/插件加载、
+目标 profile 范围、不可变版本与回滚；不能把本次离线源码测试说成镜像或客户验证。
+
+10项增量准备/拒绝测试、55项原生插件文件链路、12项收尾边界、1项能力入口和14项维护测试通过。
+标准 `scripts/run_tests.sh` 所需 pytest 在复用镜像中仍缺失，未安装，不能宣称标准全量套件通过。
+既有 offline-delivery 构建器本轮未修改，也尚未接入这一显式目标；此项须在受授权发布阶段完成。
+本轮没有镜像构建、生产发布或供应商调用，17/18与中文Wiki业务未交付状态不变。
+
 ## 2026-10-04：用尽工具前自主保存真实进度
 
 版本1.0.7新增技能内 `references/continuation.md`，明确工具结果的真实剩余模型循环步骤
