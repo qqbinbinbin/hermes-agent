@@ -42,3 +42,14 @@ test('Chinese Skill distinguishes evidence reads from published source declarati
   assert.match(examples, /不能抄入 `sources`/);
   assert.match(examples, /不决定是否创建主题或如何组织知识/);
 });
+
+test('Chinese Skill owns field reconciliation and supplies a bounded synthetic example', () => {
+  assert.match(skill, /references\/field-fidelity\.md/);
+  const example = fs.readFileSync(new URL('../skills/research/llm-wiki-fuxi/references/field-fidelity.md', import.meta.url), 'utf8');
+  for (const word of ['名称', '数值', '单位', '条件', '备注', '坐标']) assert.ok(example.includes(word), word);
+  assert.match(example, /2 小时/);
+  assert.match(example, /20 小时/);
+  assert.match(example, /仅供参考/);
+  assert.match(example, /记录数/);
+  assert.match(example, /不.*猜/);
+});
