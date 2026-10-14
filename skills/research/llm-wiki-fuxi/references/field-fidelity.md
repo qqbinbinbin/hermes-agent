@@ -18,3 +18,21 @@
 空白列无需填充。重复列、导航等是否排除由你判断并说明，不能把缺失名称误当成空白。不同来源对分类给出冲突时，保留两处断言及各自坐标，标为未决，不根据数值推断谁正确。
 
 修复范围由你根据来源与关联页面决定。工具提供的是原始单元格观察，不是主题规划；不得为观察数量造页，不修改不可变来源或旧事实，不把读取进度写进用户日志。
+
+## 原始坐标不等于事实标识
+
+下面仍是合成材料。假设受治理事实分片已经提供 `sheet-2:verified-record-1`，其断言为“项目甲，要求 2 小时”，出处是工作表 `sheet-2` 的 `B8`。坐标不能推导出另一个 `sheet-2::row-8-col-2` 事实 ID。只有核对了这条原有事实与同一断言，才能使用原 ID。
+
+以下两步演示更正已有事实引用，名称、要求与坐标均不改变；不是客户页面，也不是固定主题。
+
+```json
+{"tool":"write_file","path":"concepts/reference-check.md","content":"---\ntitle: 合成引用核对\ncreated: 2026-01-01\nupdated: 2026-01-01\ntype: concept\ntags: [合成]\nsources: [raw/source.md]\nfactRefs: [\"fact:sheet-2::row-8-col-2\"]\n---\n\n# 合成引用核对\n\n项目甲，要求 2 小时。工作表 sheet-2，坐标 B8。fact:sheet-2::row-8-col-2。\n"}
+```
+
+```json
+{"tool":"patch","path":"concepts/reference-check.md","old_string":"factRefs: [\"fact:sheet-2::row-8-col-2\"]\n---\n\n# 合成引用核对\n\n项目甲，要求 2 小时。工作表 sheet-2，坐标 B8。fact:sheet-2::row-8-col-2。","new_string":"factRefs: [\"fact:sheet-2:verified-record-1\"]\n---\n\n# 合成引用核对\n\n项目甲，要求 2 小时。工作表 sheet-2，坐标 B8。fact:sheet-2:verified-record-1。"}
+```
+
+另一种情形：原始 `E9` 备注有来源，但没有任何已审阅事实标识涵盖它。核对同一记录后，可以在知识页保留备注，注明对应可见来源页及真实工作表/坐标；不能制造 `fact:sheet-2::row-9-col-5`，也不能借用相邻记录的事实 ID。已有真实 `factRefs` 保持，只新增有依据的出处。该页完全没有权威事实时用 `factRefs: []`，但整库已有权威事实的覆盖要求不变。
+
+未解析引用不靠删除清单行或业务内容消错，也不靠反复提交同一错误标识。先区分“原有事实 ID 抄错”和“仅有原始单元格出处”，再由你根据真实来源修正文档。平台只核验标识与出处，不代替你判断业务内容。

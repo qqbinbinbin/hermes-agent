@@ -1,7 +1,7 @@
 ---
 name: llm-wiki-fuxi
 description: "自主摄入与增量整理中文知识，核验完整清单、来源和关联页面."
-version: 1.0.9
+version: 1.0.10
 author: Hermes Agent 与 FUXI 维护者
 license: MIT
 platforms: [linux, macos, windows]
@@ -151,11 +151,14 @@ updated: 实际修改日期
 type: concept
 tags: [已登记标签]
 sources: [实际来源路径]
+factRefs: [与断言对应的已有事实标识]
 ---
 ```
 
 类型与目录保持一致：`entities/` 对应 `entity`，`concepts/` 对应 `concept`，`processes/` 对应 `process`，`comparisons/` 对应 `comparison`，`queries/` 对应 `query`。
 来源引用和当前合同要求的内部 factRefs 与实际断言对应；多来源综合保留段落级出处，不能把引用全部挂到无关页或日志来冒充业务覆盖。
+`factRefs` 和正文中的 `fact:` 必须使用授权受治理事实分片已经提供的原有标识；不能从 Sheet、行列坐标或分片序号拼出新标识，也不能把原始单元格观察提升为已审阅事实。没有可证明的事实标识时，用对应可见来源页和精确 Sheet/坐标保留出处，不伪造 `fact:`。该页没有权威事实引用时可以填写 `factRefs: []`，但不能因此删除其他已核验引用或降低整库权威事实覆盖。
+引用被拒绝时，逐条回查同一来源的事实分片与原始坐标；只有确认同一断言的原标识才更正，不选相邻记录、不把内部元数据当作可编辑页面。必要时读取 `references/field-fidelity.md` 的引用核对示例。发布器不会替你补元数据、改链接或补索引，完成前须由你维护完整正文和导航。
 
 托管环境中，可读取的证据分片与可发布的来源页是两类文件。阅读目录的 `RAW` 是取证输入，`PUBLISHED_SOURCE` 是实际可见的来源包装页；语义页 `sources` 填写对应包装页的相对路径（含 `.md`），来源 Wikilink 指向该可见页。正文仍保留实际 Sheet、单元格坐标和内部 factRefs；不是把证据分片改成来源页，也不是删除精确出处。多来源时只引用实际支持该页断言的授权来源，不从允许列表任意选一项。格式示例见 `references/chinese-examples.md`。
 

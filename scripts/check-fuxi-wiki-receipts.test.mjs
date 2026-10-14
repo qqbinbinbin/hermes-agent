@@ -53,3 +53,25 @@ test('Chinese Skill owns field reconciliation and supplies a bounded synthetic e
   assert.match(example, /记录数/);
   assert.match(example, /不.*猜/);
 });
+
+test('page template supplies required metadata without depending on a rewriting publisher', () => {
+  const template = skill.split('## 页面约定与中文模板')[1]?.match(/```yaml\s*([\s\S]*?)```/)?.[1] || '';
+  for (const field of ['title', 'created', 'updated', 'type', 'tags', 'sources', 'factRefs']) {
+    assert.match(template, new RegExp(`^${field}:`, 'm'));
+  }
+  assert.match(skill, /发布器不会替你补元数据、改链接或补索引/);
+});
+
+test('source-cell references are not fabricated facts and corrections keep the source assertion', () => {
+  assert.match(skill, /不能从 Sheet、行列坐标或分片序号拼出新标识/);
+  assert.match(skill, /用对应可见来源页和精确 Sheet\/坐标保留出处/);
+  assert.match(skill, /不能因此删除其他已核验引用或降低整库权威事实覆盖/);
+  const resource = fs.readFileSync(new URL('../skills/research/llm-wiki-fuxi/references/field-fidelity.md', import.meta.url), 'utf8');
+  const calls = [...resource.matchAll(/```json\s*([\s\S]*?)```/g)].map(match => JSON.parse(match[1]));
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].tool, 'patch');
+  assert.equal(calls[0].path, calls[1].path);
+  assert.equal(calls[1].new_string, calls[1].old_string.replaceAll('sheet-2::row-8-col-2', 'sheet-2:verified-record-1'));
+  assert.match(resource, /没有任何已审阅事实标识涵盖/);
+  assert.match(resource, /不能借用相邻记录/);
+});

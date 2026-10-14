@@ -59,9 +59,29 @@ def test_rejected_link_example_changes_actual_target_and_preserves_coordinate(tm
     assert body == calls[0]["content"].replace(calls[1]["old_string"], calls[1]["new_string"])
 
 
+def test_reference_correction_example_preserves_assertion_and_coordinate(tmp_path):
+    resource = Path(__file__).resolve().parents[2] / "skills/research/llm-wiki-fuxi/references/field-fidelity.md"
+    calls = [json.loads(block) for block in re.findall(r"```json\s*(.*?)```", resource.read_text(), re.S)]
+    assert len(calls) == 2
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path), timeout=15), cwd=str(tmp_path))
+    for call in calls:
+        target = str(tmp_path / call["path"])
+        if call["tool"] == "write_file":
+            ops.write_file(target, call["content"])
+        else:
+            result = ops.patch_replace(target, call["old_string"], call["new_string"])
+            assert result.success, result.to_dict()
+    body = (tmp_path / calls[0]["path"]).read_text()
+    assert "sheet-2::row-8-col-2" not in body
+    assert "fact:sheet-2:verified-record-1" in body
+    assert "项目甲，要求 2 小时。工作表 sheet-2，坐标 B8。" in body
+    assert body == calls[0]["content"].replace(calls[1]["old_string"], calls[1]["new_string"])
+
+
 if __name__ == "__main__":
     for check in (test_skill_examples_preserve_one_page, test_long_list_is_not_limited_to_one_write,
-                  test_rejected_link_example_changes_actual_target_and_preserves_coordinate):
+                  test_rejected_link_example_changes_actual_target_and_preserves_coordinate,
+                  test_reference_correction_example_preserves_assertion_and_coordinate):
         with tempfile.TemporaryDirectory() as directory:
             check(Path(directory))
         print(f"PASS {check.__name__}")
