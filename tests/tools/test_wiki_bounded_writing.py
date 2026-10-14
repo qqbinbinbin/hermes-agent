@@ -41,8 +41,27 @@ def test_long_list_is_not_limited_to_one_write(tmp_path):
     assert path.read_text() == expected
 
 
+def test_rejected_link_example_changes_actual_target_and_preserves_coordinate(tmp_path):
+    resource = Path(__file__).resolve().parents[2] / "skills/research/llm-wiki-fuxi/references/link-correction.md"
+    calls = [json.loads(block) for block in re.findall(r"```json\s*(.*?)```", resource.read_text(), re.S)]
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path), timeout=15), cwd=str(tmp_path))
+    for call in calls:
+        path = str(tmp_path / call["path"])
+        if call["tool"] == "write_file":
+            ops.write_file(path, call["content"])
+        else:
+            result = ops.patch_replace(path, call["old_string"], call["new_string"])
+            assert result.success, result.to_dict()
+    body = (tmp_path / calls[0]["path"]).read_text()
+    assert calls[1]["old_string"] not in body
+    assert calls[1]["new_string"] in body
+    assert "工作表 sheet-2，坐标 B6。" in body
+    assert body == calls[0]["content"].replace(calls[1]["old_string"], calls[1]["new_string"])
+
+
 if __name__ == "__main__":
-    for check in (test_skill_examples_preserve_one_page, test_long_list_is_not_limited_to_one_write):
+    for check in (test_skill_examples_preserve_one_page, test_long_list_is_not_limited_to_one_write,
+                  test_rejected_link_example_changes_actual_target_and_preserves_coordinate):
         with tempfile.TemporaryDirectory() as directory:
             check(Path(directory))
         print(f"PASS {check.__name__}")
