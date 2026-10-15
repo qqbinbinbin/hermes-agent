@@ -1,7 +1,7 @@
 ---
 name: llm-wiki-fuxi
 description: "自主摄入与增量整理中文知识，核验完整清单、来源和关联页面."
-version: 1.0.12
+version: 1.0.13
 author: Hermes Agent 与 FUXI 维护者
 license: MIT
 platforms: [linux, macos, windows]
@@ -202,7 +202,7 @@ factRefs: [与断言对应的已有事实标识]
 {"version":"kb-wiki-unit-receipt-v1","unitId":"当前单元标识","turnNonce":"本轮授权标识","semanticPaths":["concepts/topic.md"]}
 ```
 
-**完整审阅后无需修改语义页面**：这不是待续，也不是规避尚未完成的工作。按运行合同保留完整事实集合、来源路径和指纹，不能套用上一种简短回执省略审阅证据。先在 `log.md` 追加本次审阅的具体中文业务理由，再将同一句理由逐字填入内部回执的 `reviewReason`；这是同一审阅决定的可追溯对账，不是要求创建新页面。若工具指出日志与回执不一致，在同一回合自行核对并修正后重交，不重新读取整本来源、不另开模型回合；平台不会代写你的业务判断。
+**完整审阅后无需修改语义页面**：这不是待续，也不是规避尚未完成的工作。按运行合同保留当前运输段的完整事实集合、来源路径和指纹，不能套用上一种简短回执省略审阅证据。不能把前一段或关联页的事实标识带入当前段；当前段只有原始单元格、没有已接受事实时，`reviewedFactIds` 使用空数组，不能按单元格坐标编造事实。先在 `log.md` 追加本次审阅的具体中文业务理由，再将同一句理由逐字填入内部回执的 `reviewReason`；这是同一审阅决定的可追溯对账，不是要求创建新页面。若工具指出日志或事实集合与当前段不一致，在同一回合自行核对并修正后重交，不重新读取整本来源、不另开模型回合；平台不会代写你的业务判断，也不会替你填写审阅决定。
 
 ```json
 {"version":"kb-wiki-unit-receipt-v1","unitId":"当前单元标识","turnNonce":"本轮授权标识","semanticPaths":[],"reviewDisposition":"no_semantic_change","reviewReason":"实际审阅理由，与业务日志一致","reviewedFactIds":["实际完整事实标识集合"],"reviewedSources":[{"path":"实际授权来源路径","sha256":"实际来源指纹"}]}

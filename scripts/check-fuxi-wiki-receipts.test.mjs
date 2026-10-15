@@ -31,6 +31,13 @@ test('Chinese Skill owns the review reason and corrects receipt formatting in th
   assert.match(skill, /平台不会代写你的业务判断/);
 });
 
+test('unchanged review is limited to the current transport slice including cells-only evidence', () => {
+  assert.match(skill, /当前运输段/);
+  assert.match(skill, /没有已接受事实.*reviewedFactIds.*空数组/);
+  assert.match(skill, /不能把前一段.*事实标识/);
+  assert.match(skill, /不会替你填写审阅决定/);
+});
+
 test('Chinese Skill distinguishes evidence reads from published source declarations', () => {
   assert.match(skill, /`RAW` 是取证输入/);
   assert.match(skill, /`PUBLISHED_SOURCE` 是实际可见的来源包装页/);
