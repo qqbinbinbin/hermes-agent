@@ -62,6 +62,25 @@ test('page template supplies required metadata without depending on a rewriting 
   assert.match(skill, /发布器不会替你补元数据、改链接或补索引/);
 });
 
+test('clause example preserves every source obligation and its independent location', () => {
+  const resource = fs.readFileSync(new URL('../skills/research/llm-wiki-fuxi/references/field-fidelity.md', import.meta.url), 'utf8');
+  const section = resource.split('## 文本条款不等于字段清单')[1] || '';
+  const sources = [...section.matchAll(/^\| ([A-Z]+\d+) \| ([^|]+) \|$/gm)]
+    .map(([, address, text]) => ({address, text: text.trim()}));
+  const example = section.match(/```markdown\s*([\s\S]*?)```/)?.[1] || '';
+  assert.ok(sources.length > 0, 'The synthetic source must contain actual clauses');
+  assert.ok(example, 'The resource must include a concrete business-writing example');
+  for (const source of sources) {
+    assert.ok(example.includes(source.text), `Missing source obligation: ${source.address}`);
+    assert.ok(new RegExp(`工作表 ${source.address}。`).test(example), `Missing separate provenance: ${source.address}`);
+  }
+  assert.match(skill, /文本条款/);
+  assert.match(section, /不是.*每个.*字段.*义务/);
+  assert.match(section, /主题.*仍由你/);
+  assert.match(section, /脚注.*不能代替/);
+  assert.doesNotMatch(example, /详见原文|\.\.\.|…/);
+});
+
 test('source-cell references are not fabricated facts and corrections keep the source assertion', () => {
   assert.match(skill, /不能从 Sheet、行列坐标或分片序号拼出新标识/);
   assert.match(skill, /用对应可见来源页和精确 Sheet\/坐标保留出处/);
