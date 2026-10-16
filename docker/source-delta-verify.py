@@ -47,6 +47,10 @@ def prepare_source(repo: Path, revision: str, destination: Path) -> None:
     manifest = "".join(f"{hashlib.sha256(payload[member]).hexdigest()}  {member}\n"
                        for member in MEMBERS)
     (destination / ".fuxi-source-delta.sha256").write_text(manifest, encoding="utf-8")
+    # Build callers use a private umask; installed non-root readers must still
+    # receive ordinary Git source modes rather than root-only COPY payloads.
+    for path in [destination, *destination.rglob("*")]:
+        path.chmod(0o755 if path.is_dir() else 0o644)
 
 
 def verify_source(root: Path, parent_image_id: str, revision: str) -> dict:

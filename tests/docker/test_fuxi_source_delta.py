@@ -5,6 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 import subprocess
+import os
 
 
 REPO = Path(__file__).resolve().parents[2]
@@ -137,6 +138,19 @@ class SourceDeltaTests(unittest.TestCase):
         DELTA.verify_source(destination, PARENT, revision)
         with self.assertRaises(FileExistsError):
             DELTA.prepare_source(self.root, revision, destination)
+
+    def test_preparation_sets_nonroot_readable_modes_under_private_umask(self):
+        revision = self.committed_fixture()
+        destination = self.root / "private-prepared"
+        previous = os.umask(0o077)
+        try:
+            DELTA.prepare_source(self.root, revision, destination)
+        finally:
+            os.umask(previous)
+        for entry in [destination, *destination.rglob("*")]:
+            with self.subTest(path=entry.relative_to(destination)):
+                self.assertEqual(entry.stat().st_mode & 0o777,
+                                 0o755 if entry.is_dir() else 0o644)
 
     def test_preparation_rejects_git_symlink_before_creating_output(self):
         member = self.root / DELTA.MEMBERS[0]
