@@ -311,6 +311,18 @@ def _resolve_request_runtime_agent_kwargs(provider: str, target_model: Optional[
     }
 
 
+def _durable_yield_available():
+    try:
+        from agent import turn_finalizer
+        from gateway.platforms import api_run_store, native_yield
+
+        return (getattr(turn_finalizer, "DURABLE_ITERATION_YIELD", False) is True
+                and getattr(api_run_store, "DURABLE_RESUME_CLAIM", False) is True
+                and getattr(native_yield, "DURABLE_YIELD_CHECKPOINT", False) is True)
+    except ImportError:
+        return False
+
+
 def _request_agent_overrides(
     body: Any,
     *,
@@ -3001,6 +3013,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_persistent_idempotency": True,
                 "run_key_lookup": True,
                 "run_absolute_deadline": True,
+                "run_durable_iteration_yield": _durable_yield_available(),
                 "tool_execution_request_budget": getattr(
                     middleware, "TOOL_EXECUTION_REQUEST_BUDGET", False
                 ) is True,
@@ -6286,6 +6299,23 @@ class APIServerAdapter(BasePlatformAdapter):
                     or deadline_at <= time.time()):
                 return web.json_response(_openai_error("Invalid or expired deadline_at"), status=400)
 
+        iteration_action = body.get("iteration_limit_action", "summary")
+        from gateway.platforms.api_run_store import RunIdentityConflict
+
+        resume_run_id = body.get("resume_from_run_id")
+        resume_claim = None
+        if iteration_action not in ("summary", "yield"):
+            return web.json_response(_openai_error("Invalid iteration_limit_action"), status=400)
+        if iteration_action == "yield" and not _durable_yield_available():
+            return web.json_response(_openai_error("run_yield_capability_unavailable"), status=503)
+        if iteration_action == "yield" and (not self._api_key or deadline_at is None
+                or not request.headers.get("X-Hermes-Session-Id")
+                or not request.headers.get("Idempotency-Key")):
+            return web.json_response(_openai_error("Durable yield requires authenticated session, key and deadline"), status=400)
+        if resume_run_id is not None and (iteration_action != "yield"
+                or not isinstance(resume_run_id, str) or not re.fullmatch(r"run_[a-f0-9]{32}", resume_run_id)):
+            return web.json_response(_openai_error("Invalid resume_from_run_id"), status=400)
+
         user_message = raw_input if isinstance(raw_input, str) else (raw_input[-1].get("content", "") if isinstance(raw_input, list) else "")
         if not user_message:
             return web.json_response(_openai_error("No user message found in input"), status=400)
@@ -6352,9 +6382,34 @@ class APIServerAdapter(BasePlatformAdapter):
                     or raw_history or previous_response_id):
                 return web.json_response(_openai_error("Invalid session continuation"), status=400)
             try:
+                if resume_run_id is not None:
+                    from gateway.platforms.api_run_store import RunIdentityConflict, detached_run_status
+
+                    key = request.headers.get("Idempotency-Key")
+                    if not isinstance(key, str) or not key.strip() or len(key) > 200:
+                        return web.json_response(_openai_error("Invalid Idempotency-Key"), status=400)
+                    store = self._native_run_store()
+                    saved = store.get_by_key(key, {"body": body, "session_key": gateway_session_key,
+                                                   "session_continuity": provided_session_id})
+                    if saved is not None:
+                        return web.json_response({**(self._run_statuses.get(saved["run_id"])
+                                                     or detached_run_status(saved)), "reused": True}, status=202)
                 session_id, conversation_history = await self._restore_api_session_history(provided_session_id)
+            except RunIdentityConflict:
+                return web.json_response(_openai_error("run_idempotency_conflict"), status=409)
             except Exception:
                 return web.json_response(_openai_error("session_history_unavailable"), status=503)
+        if resume_run_id is not None:
+            from gateway.platforms.native_yield import verify_yield_resume
+
+            try:
+                parent = store.get(resume_run_id)
+                checkpoint = verify_yield_resume(parent, root_session_id=provided_session_id,
+                    session_id=session_id, history=conversation_history, deadline_at=deadline_at, now=time.time())
+                resume_claim = {"run_id": resume_run_id,
+                                "checkpoint_sha256": checkpoint["checkpointSha256"]}
+            except Exception:
+                return web.json_response(_openai_error("run_resume_checkpoint_invalid"), status=409)
         route = self._resolve_route(body.get("model"))
         agent_overrides = _request_agent_overrides(body, virtual_model=self._model_name)
         selection_error = self._request_route_conflict_error(
@@ -6380,7 +6435,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 created, saved = store.claim(idempotency_key, {
                     "body": body, "session_key": gateway_session_key,
                     "session_continuity": provided_session_id,
-                })
+                }, **({"resume_from": resume_claim} if resume_claim is not None else {}))
             except RunIdentityConflict:
                 return web.json_response(_openai_error("run_idempotency_conflict"), status=409)
             except Exception:
@@ -6480,6 +6535,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         route=route,
                     )
                 self._active_run_agents[run_id] = agent
+                agent._iteration_limit_action = iteration_action
                 if deadline_at is not None and time.time() >= deadline_at:
                     _deadline_expired()
 
@@ -6601,6 +6657,25 @@ class APIServerAdapter(BasePlatformAdapter):
                         usage=usage,
                         last_event="run.failed",
                     )
+                elif isinstance(result, dict) and result.get("yielded") is True:
+                    from gateway.platforms.native_yield import build_yield_checkpoint
+
+                    tip, history = await self._restore_api_session_history(result.get("session_id"))
+                    checkpoint = build_yield_checkpoint(result, root_session_id=provided_session_id,
+                        session_id=tip, history=history, deadline_at=deadline_at, now=time.time())
+                    if run_id in self._stopping_run_ids or time.time() >= deadline_at:
+                        raise RuntimeError("run_yield_cancelled_or_expired")
+                    self._set_run_status(run_id, "paused", continuation=checkpoint, usage=usage,
+                                         last_event="run.paused")
+                    _put_event_if_active({"event": "run.paused", "run_id": run_id,
+                                          "timestamp": time.time(), "continuation": checkpoint})
+                elif iteration_action == "yield" and (not isinstance(result, dict)
+                        or result.get("completed") is not True or result.get("cleanup_errors")
+                        or result.get("interrupted") is True):
+                    self._set_run_status(run_id, "failed", error="run_incomplete_without_yield",
+                                         usage=usage, last_event="run.failed")
+                    _put_event_if_active({"event": "run.failed", "run_id": run_id,
+                                          "timestamp": time.time(), "error": "run_incomplete_without_yield"})
                 else:
                     final_response = result.get("final_response", "") if isinstance(result, dict) else ""
                     _put_event_if_active({
@@ -6981,7 +7056,7 @@ class APIServerAdapter(BasePlatformAdapter):
         stale_statuses = [
             run_id
             for run_id, status in list(self._run_statuses.items())
-            if status.get("status") in {"completed", "failed", "cancelled"}
+            if status.get("status") in {"completed", "failed", "cancelled", "paused"}
             and now - float(status.get("updated_at", 0) or 0) > self._RUN_STATUS_TTL
         ]
         for run_id in stale_statuses:

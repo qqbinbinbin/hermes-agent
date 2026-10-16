@@ -8,6 +8,8 @@ import threading
 import time
 import uuid
 
+DURABLE_RESUME_CLAIM = True
+
 
 class RunIdentityConflict(ValueError):
     pass
@@ -28,7 +30,7 @@ class APIRunStore:
         )""")
         self._conn.commit()
 
-    def claim(self, key, payload):
+    def claim(self, key, payload, *, resume_from=None):
         key_hash = hashlib.sha256(key.encode()).hexdigest()
         payload_hash = hashlib.sha256(json.dumps(
             payload, sort_keys=True, separators=(",", ":"), allow_nan=False
@@ -45,6 +47,19 @@ class APIRunStore:
                 return False, json.loads(row[1])
             status = {"object": "hermes.run", "run_id": f"run_{uuid.uuid4().hex}",
                       "status": "accepted", "created_at": time.time()}
+            if resume_from is not None:
+                parent_row = self._conn.execute(
+                    "SELECT status_json FROM api_runs WHERE run_id=?", (resume_from["run_id"],),
+                ).fetchone()
+                parent = json.loads(parent_row[0]) if parent_row else None
+                if (not parent or parent.get("status") != "paused" or parent.get("resumed_by_run_id")
+                        or parent.get("continuation", {}).get("checkpointSha256")
+                        != resume_from["checkpoint_sha256"]):
+                    raise RunIdentityConflict("run_resume_conflict")
+                parent["resumed_by_run_id"] = status["run_id"]
+                status["resumed_from_run_id"] = resume_from["run_id"]
+                self._conn.execute("UPDATE api_runs SET status_json=? WHERE run_id=?",
+                                   (json.dumps(parent), resume_from["run_id"]))
             self._conn.execute("INSERT INTO api_runs VALUES (?, ?, ?, ?)",
                                (key_hash, payload_hash, status["run_id"], json.dumps(status)))
             return True, status
@@ -69,18 +84,24 @@ class APIRunStore:
         with self._lock:
             self._conn.close()
 
-    def get_by_key(self, key):
+    def get_by_key(self, key, payload=None):
         key_hash = hashlib.sha256(key.encode()).hexdigest()
         with self._lock:
             row = self._conn.execute(
-                "SELECT status_json FROM api_runs WHERE request_key=?", (key_hash,),
+                "SELECT payload_hash, status_json FROM api_runs WHERE request_key=?", (key_hash,),
             ).fetchone()
-            return json.loads(row[0]) if row else None
+            if row and payload is not None:
+                payload_hash = hashlib.sha256(json.dumps(
+                    payload, sort_keys=True, separators=(",", ":"), allow_nan=False
+                ).encode()).hexdigest()
+                if payload_hash != row[0]:
+                    raise RunIdentityConflict("run_idempotency_conflict")
+            return json.loads(row[1]) if row else None
 
 
 def detached_run_status(status):
     """A surviving record is not proof an interrupted executor is still alive."""
-    if status["status"] in {"completed", "failed", "cancelled"}:
+    if status["status"] in {"completed", "failed", "cancelled", "paused"}:
         return status
     return {**status, "status": "unknown", "persisted_status": status["status"],
             "reconciliation_required": True}

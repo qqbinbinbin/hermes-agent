@@ -22,6 +22,8 @@ keep the exact logger name (``"agent.conversation_loop"``).
 
 from __future__ import annotations
 
+DURABLE_ITERATION_YIELD = True
+
 import os
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
@@ -108,8 +110,15 @@ def finalize_turn(
     )
 
     iteration_limit_fallback = False
+    iteration_yielded = False
     preserved_verification_fallback = False
-    if continuation_budget_exhausted:
+    if (budget_fallback_eligible and final_response is None
+            and getattr(agent, "_iteration_limit_action", None) == "yield"):
+        # A managed long job retains its real transcript instead of buying a
+        # toolless summary. The API must independently verify durable history.
+        _turn_exit_reason = "iteration_limit_yield"
+        iteration_yielded = True
+    elif continuation_budget_exhausted:
         # A verification/continuation gate deliberately withheld a composed
         # answer, then consumed the remaining budget before producing a newer
         # one. Preserve that exact answer instead of replacing it with another
@@ -607,6 +616,8 @@ def finalize_turn(
         ).get("service_tier"),
         "session_id": agent.session_id,
     }
+    if iteration_yielded:
+        result["yielded"] = not failed and not interrupted and not _cleanup_errors
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
     # Surface any post-loop cleanup failures so the caller can distinguish a
