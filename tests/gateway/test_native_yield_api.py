@@ -27,6 +27,40 @@ def response(path=None, content=None):
 
 
 class NativeYieldAPITest(unittest.IsolatedAsyncioTestCase):
+    async def test_saved_compression_tip_is_restored_and_later_history_change_cannot_resume(self):
+        from gateway.platforms.native_yield import build_yield_checkpoint, verify_yield_resume
+
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"HERMES_HOME": directory}):
+            db = SessionDB(Path(directory) / "state.db")
+            self.addCleanup(db.close)
+            db.create_session("root", "api")
+            db.append_message("root", "user", "压缩前的合成记录")
+            db.end_session("root", "compression")
+            db.create_session("tip", "api", parent_session_id="root")
+            # Keep the lineage strictly after the parent compression boundary.
+            db._conn.execute("UPDATE sessions SET started_at = (SELECT ended_at + 1 FROM sessions WHERE id='root') WHERE id='tip'")
+            db._conn.commit()
+            db.append_message("tip", "user", "合成压缩记录")
+            db.append_message("tip", "assistant", "", tool_calls=[{"id": "read-1", "type": "function",
+                "function": {"name": "read_file", "arguments": '{"path":"source.md"}'}}])
+            db.append_message("tip", "tool", '{"content":"合成来源"}', tool_call_id="read-1")
+            adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={"key": "synthetic-key"}))
+            self.addAsyncCleanup(adapter.disconnect)
+            adapter._session_db = db
+            tip, history = await adapter._restore_api_session_history("root")
+            self.assertEqual(tip, "tip")
+            self.assertEqual(len(history), 3)
+            result = {"yielded": True, "completed": False, "failed": False, "interrupted": False,
+                "turn_exit_reason": "iteration_limit_yield", "session_id": tip, "api_calls": 1, "messages": history}
+            options = {"root_session_id": "root", "session_id": tip, "history": history,
+                "deadline_at": time.time() + 60, "now": time.time()}
+            parent = {"status": "paused", "continuation": build_yield_checkpoint(result, **options)}
+            verify_yield_resume(parent, **options)
+            db.append_message("tip", "user", "未经本次许可的追加内容")
+            _, changed = await adapter._restore_api_session_history("root")
+            with self.assertRaisesRegex(ValueError, "yield_history_mismatch"):
+                verify_yield_resume(parent, **{**options, "history": changed})
+
     def test_capability_requires_coherent_core_persistence_and_checkpoint_modules(self):
         for target in ('agent.turn_finalizer.DURABLE_ITERATION_YIELD',
                        'gateway.platforms.api_run_store.DURABLE_RESUME_CLAIM',

@@ -16,7 +16,7 @@ class NativeDeadlineTest(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.network_guard.stop)
 
     async def exercise(self, *, timeout=None, finish_after=None, stop=False, failed=False,
-                       delayed_interrupt=False, check_replay=False):
+                       delayed_interrupt=False, check_replay=False, yield_mode=False):
         from gateway.config import PlatformConfig
         from gateway.platforms.api_server import APIServerAdapter
 
@@ -39,6 +39,9 @@ class NativeDeadlineTest(unittest.IsolatedAsyncioTestCase):
         req = MagicMock()
         req.headers = {"Authorization": "Bearer synthetic", "Idempotency-Key": uuid.uuid4().hex}
         body = {"input": "synthetic deadline test"}
+        if yield_mode:
+            body["iteration_limit_action"] = "yield"
+            req.headers["X-Hermes-Session-Id"] = "synthetic-yield-cancellation"
         if timeout is not None:
             body["deadline_at"] = time.time() + timeout
         req.json = AsyncMock(return_value=body)
@@ -88,6 +91,13 @@ class NativeDeadlineTest(unittest.IsolatedAsyncioTestCase):
                 tasks = list(adapter._active_run_tasks.values())
                 if tasks:
                     await asyncio.wait_for(asyncio.gather(*tasks), 5)
+                await adapter.disconnect()
+                for store in getattr(adapter, "_native_run_stores", {}).values():
+                    store.close()
+                if getattr(adapter, "_session_db", None) is not None:
+                    adapter._session_db.close()
+                for db in getattr(adapter, "_session_dbs", {}).values():
+                    db.close()
 
     async def test_deadline_interrupts_without_gateway_observer(self):
         status, agent, _ = await self.exercise(timeout=0.2)
@@ -99,6 +109,20 @@ class NativeDeadlineTest(unittest.IsolatedAsyncioTestCase):
         status, agent, _ = await self.exercise(timeout=20, stop=True)
         self.assertEqual(status["status"], "cancelled")
         agent.interrupt.assert_called_once()
+
+    async def test_yield_mode_deadline_is_cancellation_not_resumable_pause(self):
+        status, agent, _ = await self.exercise(timeout=0.2, yield_mode=True, delayed_interrupt=True)
+        self.assertEqual(status["status"], "cancelled")
+        self.assertEqual(status["stop_reason"], "deadline_exceeded")
+        self.assertNotIn("continuation", status)
+        agent.interrupt.assert_called_once()
+
+    async def test_yield_mode_explicit_stop_does_not_refund_or_erase_usage(self):
+        status, agent, _ = await self.exercise(timeout=20, stop=True, yield_mode=True)
+        self.assertEqual(status["status"], "cancelled")
+        self.assertNotIn("continuation", status)
+        self.assertEqual(status["usage"]["total_tokens"], 20)
+        agent.run_conversation.assert_called_once()
 
     async def test_deadline_does_not_claim_thread_stopped_before_it_returns(self):
         status, _, _ = await self.exercise(timeout=0.2, delayed_interrupt=True)
@@ -122,6 +146,7 @@ class NativeDeadlineTest(unittest.IsolatedAsyncioTestCase):
         from gateway.config import PlatformConfig
         from gateway.platforms.api_server import APIServerAdapter
         adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={"key": "synthetic"}))
+        self.addAsyncCleanup(adapter.disconnect)
         for value in [True, "tomorrow", float("nan"), float("inf"), time.time() - 1]:
             req = MagicMock()
             req.headers = {"Authorization": "Bearer synthetic"}
