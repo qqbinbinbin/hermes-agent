@@ -17,6 +17,11 @@ REVISION = "b" * 40
 
 
 class SourceDeltaTests(unittest.TestCase):
+    def test_durable_yield_store_and_checkpoint_are_required_runtime_members(self):
+        for name in ("gateway/platforms/api_run_store.py", "gateway/platforms/native_yield.py"):
+            with self.subTest(name=name):
+                self.assertIn(name, DELTA.MEMBERS)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

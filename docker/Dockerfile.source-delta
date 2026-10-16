@@ -9,6 +9,8 @@ COPY agent/tool_executor.py /opt/hermes/agent/tool_executor.py
 COPY agent/turn_finalizer.py /opt/hermes/agent/turn_finalizer.py
 COPY hermes_cli/middleware.py /opt/hermes/hermes_cli/middleware.py
 COPY gateway/platforms/api_server.py /opt/hermes/gateway/platforms/api_server.py
+COPY gateway/platforms/api_run_store.py /opt/hermes/gateway/platforms/api_run_store.py
+COPY gateway/platforms/native_yield.py /opt/hermes/gateway/platforms/native_yield.py
 COPY skills/research/llm-wiki-fuxi/SKILL.md /opt/hermes/skills/research/llm-wiki-fuxi/SKILL.md
 COPY skills/research/llm-wiki-fuxi/references/continuation.md /opt/hermes/skills/research/llm-wiki-fuxi/references/continuation.md
 COPY docker/source-delta-verify.py /opt/hermes/docker/source-delta-verify.py

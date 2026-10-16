@@ -13,6 +13,8 @@ MEMBERS = (
     "agent/turn_finalizer.py",
     "hermes_cli/middleware.py",
     "gateway/platforms/api_server.py",
+    "gateway/platforms/api_run_store.py",
+    "gateway/platforms/native_yield.py",
     "skills/research/llm-wiki-fuxi/SKILL.md",
     "skills/research/llm-wiki-fuxi/references/continuation.md",
     "docker/source-delta-verify.py",
