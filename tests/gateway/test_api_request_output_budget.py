@@ -73,4 +73,3 @@ class TestRequestOutputBudget:
         with pytest.raises(ValueError, match="max_tokens_must_be_positive_integer"):
             adapter._create_agent(session_id="invalid-budget", model_options={"max_tokens": requested})
         assert captured == {}
-
