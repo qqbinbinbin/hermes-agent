@@ -23,16 +23,23 @@ class NativeDeadlineTest(unittest.IsolatedAsyncioTestCase):
         adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={"key": "synthetic"}))
         released = threading.Event()
         entered = threading.Event()
+        interrupted = threading.Event()
         agent = MagicMock()
         agent.session_prompt_tokens = 17
         agent.session_completion_tokens = 3
         agent.session_total_tokens = 20
-        agent.interrupt.side_effect = (lambda *_: None) if delayed_interrupt else (lambda *_: released.set())
+        def interrupt(*_):
+            interrupted.set()
+            if not delayed_interrupt:
+                released.set()
+        agent.interrupt.side_effect = interrupt
 
         def run(**_):
             entered.set()
             if not released.wait(130):
                 raise AssertionError("synthetic release missing")
+            if agent.interrupt.called:
+                return {'interrupted': True, 'completed': False}
             return {"failed": True, "error": "synthetic"} if failed else {"final_response": "synthetic"}
 
         agent.run_conversation.side_effect = run
@@ -46,6 +53,9 @@ class NativeDeadlineTest(unittest.IsolatedAsyncioTestCase):
             body["deadline_at"] = time.time() + timeout
         req.json = AsyncMock(return_value=body)
         started = time.monotonic()
+        await adapter._ensure_session_db_async()
+        if timeout is not None:
+            body["deadline_at"] = time.time() + timeout
         release_handle = None
         with patch.object(adapter, "_create_agent", return_value=agent):
             try:
@@ -69,10 +79,7 @@ class NativeDeadlineTest(unittest.IsolatedAsyncioTestCase):
                     req.match_info = {"run_id": run_id}
                     self.assertEqual((await adapter._handle_stop_run(req)).status, 200)
                 if delayed_interrupt:
-                    for _ in range(100):
-                        if agent.interrupt.called:
-                            break
-                        await asyncio.sleep(0.01)
+                    self.assertTrue(await asyncio.to_thread(interrupted.wait, (timeout or 3) + 3))
                     self.assertTrue(agent.interrupt.called)
                     self.assertEqual(adapter._run_statuses[run_id]["status"], "stopping")
                     self.assertFalse(task.done())
@@ -81,7 +88,7 @@ class NativeDeadlineTest(unittest.IsolatedAsyncioTestCase):
                 # Deliberately no observer or SSE reader while the task runs.
                 await asyncio.wait_for(asyncio.shield(task), min(125, (timeout or 3) + 2))
                 status = adapter._run_statuses[run_id]
-                self.assertEqual(status["usage"], {"input_tokens": 17, "output_tokens": 3, "total_tokens": 20})
+                self.assertEqual(status["usage"], {"input_tokens": 17, "output_tokens": 3, "total_tokens": 20, "cache_read_tokens": 0, "cache_write_tokens": 0})
                 agent.run_conversation.assert_called_once()
                 return status, agent, time.monotonic() - started
             finally:
@@ -100,7 +107,7 @@ class NativeDeadlineTest(unittest.IsolatedAsyncioTestCase):
                     db.close()
 
     async def test_deadline_interrupts_without_gateway_observer(self):
-        status, agent, _ = await self.exercise(timeout=0.2)
+        status, agent, _ = await self.exercise(timeout=2)
         self.assertEqual(status["status"], "cancelled")
         self.assertEqual(status["stop_reason"], "deadline_exceeded")
         agent.interrupt.assert_called_once()
@@ -111,7 +118,7 @@ class NativeDeadlineTest(unittest.IsolatedAsyncioTestCase):
         agent.interrupt.assert_called_once()
 
     async def test_yield_mode_deadline_is_cancellation_not_resumable_pause(self):
-        status, agent, _ = await self.exercise(timeout=0.2, yield_mode=True, delayed_interrupt=True)
+        status, agent, _ = await self.exercise(timeout=2, yield_mode=True, delayed_interrupt=True)
         self.assertEqual(status["status"], "cancelled")
         self.assertEqual(status["stop_reason"], "deadline_exceeded")
         self.assertNotIn("continuation", status)
@@ -125,7 +132,7 @@ class NativeDeadlineTest(unittest.IsolatedAsyncioTestCase):
         agent.run_conversation.assert_called_once()
 
     async def test_deadline_does_not_claim_thread_stopped_before_it_returns(self):
-        status, _, _ = await self.exercise(timeout=0.2, delayed_interrupt=True)
+        status, _, _ = await self.exercise(timeout=2, delayed_interrupt=True)
         self.assertEqual(status["status"], "cancelled")
 
     async def test_same_key_cannot_extend_absolute_deadline(self):

@@ -892,8 +892,9 @@ def _add_model_aliases(cache: dict[str, dict[str, Any]], model_id: str, entry: d
 
 
 def fetch_model_metadata(force_refresh: bool = False) -> dict[str, dict[str, Any]]:
-    """Fetch model metadata from OpenRouter (cached for 1 hour)."""
     global _model_metadata_cache, _model_metadata_cache_time
+    if not model_metadata_http.openrouter_network_enabled():
+        return _model_metadata_cache or _load_model_metadata_disk_cache() or {}
     if not force_refresh:
         if _model_metadata_cache and (time.time() - _model_metadata_cache_time) < _MODEL_CACHE_TTL:
             return _model_metadata_cache
@@ -905,8 +906,6 @@ def fetch_model_metadata(force_refresh: bool = False) -> dict[str, dict[str, Any
                 _model_metadata_cache_time = time.time() - disk_age
                 return _model_metadata_cache
     try:
-        # (connect, read) tuple: a flat timeout lets urllib3 block per retry stage through proxies that 403 CONNECT.
-        # See #46620.
         response = model_metadata_http.get(OPENROUTER_MODELS_URL, timeout=(5, 10), verify=model_metadata_http.resolve_verify())
         response.raise_for_status()
         cache = {}

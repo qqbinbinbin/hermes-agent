@@ -22,6 +22,8 @@ from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.message_sanitization import _sanitize_surrogates
 from agent.served_model import result_model_fields
 
+DURABLE_ITERATION_YIELD = True
+
 # Verification-continuation nudges (verify-on-stop / pre_verify) must be stripped from
 # returned/live history to avoid role-alternation breaks; the assistant response is
 # real content and is not flagged. (#65919)
@@ -124,19 +126,26 @@ def _guarded_cleanup(label: str, fn: Callable[[], Any], errors: list[str], logge
 def _resolve_budget_fallback(
     agent, *, final_response, api_call_count, interrupted, failed, messages, _turn_exit_reason,
     _pending_verification_response, _pending_verification_response_previewed, logger,
-) -> tuple[Any, Any, bool, Any]:
-    """Iteration-budget exhaustion. Returns ``(final_response, _turn_exit_reason,
-    preserved_verification_fallback, interrupted)``."""
+) -> tuple[Any, Any, bool, Any, bool]:
+    """Iteration-budget exhaustion.
+
+    Returns ``(final_response, _turn_exit_reason, preserved_verification_fallback,
+    interrupted, iteration_yielded)``.
+    """
     budget_exhausted = (
         api_call_count >= agent.max_iterations or agent.iteration_budget.remaining <= 0
     )
     preserved_verification_fallback = False
+    iteration_yielded = False
     if (
         final_response is None and budget_exhausted and not interrupted and not failed
         and str(_turn_exit_reason) in {"unknown", "budget_exhausted"}
     ):
-        _turn_exit_reason = f"max_iterations_reached({api_call_count}/{agent.max_iterations})"
-        if _pending_verification_response:
+        if getattr(agent, "_iteration_limit_action", None) == "yield" and final_response is None:
+            _turn_exit_reason = "iteration_limit_yield"
+            iteration_yielded = True
+        elif _pending_verification_response:
+            _turn_exit_reason = f"max_iterations_reached({api_call_count}/{agent.max_iterations})"
             # A verification gate withheld a composed answer, then the budget ran out:
             # preserve it rather than make another fallible call. The explicit pending
             # value is the provenance guard; unrelated error exits never enter here.
@@ -148,6 +157,7 @@ def _resolve_budget_fallback(
                 agent._reused_response_text = final_response
             preserved_verification_fallback = True
         else:
+            _turn_exit_reason = f"max_iterations_reached({api_call_count}/{agent.max_iterations})"
             # _handle_max_iterations makes one extra toolless request for a summary.
             agent._emit_diagnostic_status(
                 f"⚠️ Iteration budget exhausted ({api_call_count}/{agent.max_iterations}) "
@@ -192,7 +202,7 @@ def _resolve_budget_fallback(
     # closed it — the CAS invariant in ``_end_run`` (``WHERE ended_at IS NULL``) guarantees idempotence.
     if _kanban_task:
         _record_kanban_budget_exhausted(_kanban_task, api_call_count, agent.max_iterations, logger)
-    return final_response, _turn_exit_reason, preserved_verification_fallback, interrupted
+    return final_response, _turn_exit_reason, preserved_verification_fallback, interrupted, iteration_yielded
 
 
 def _rollback_interrupted_preflight_display(agent, interrupted) -> None:
@@ -531,7 +541,7 @@ def finalize_turn(
     """Run the post-loop finalization and return the turn ``result`` dict."""
     from agent.conversation_loop import logger
 
-    final_response, _turn_exit_reason, preserved_verification_fallback, interrupted = _resolve_budget_fallback(
+    final_response, _turn_exit_reason, preserved_verification_fallback, interrupted, iteration_yielded = _resolve_budget_fallback(
         agent, final_response=final_response, api_call_count=api_call_count,
         interrupted=interrupted, failed=failed, messages=messages,
         _turn_exit_reason=_turn_exit_reason,
@@ -552,9 +562,11 @@ def finalize_turn(
     if (
         not final_response
         and not interrupted
+        and not failed
         and messages
         and isinstance(messages[-1], dict)
         and messages[-1].get("role") == "tool"
+        and not iteration_yielded
         and not (getattr(agent, "_current_streamed_assistant_text", "") or "").strip()
     ):
         _turn_exit_reason = "pending_tool_result"
@@ -589,7 +601,9 @@ def finalize_turn(
         final_response is not None
         and not failed
         and not interrupted
-        and (api_call_count < agent.max_iterations or str(_turn_exit_reason).startswith("text_response("))
+        and (api_call_count < agent.max_iterations
+             or str(_turn_exit_reason).startswith("text_response(")
+             or (_turn_exit_reason == "native_tool_completion" and api_call_count <= agent.max_iterations))
     )
 
     _rollback_interrupted_preflight_display(agent, interrupted)

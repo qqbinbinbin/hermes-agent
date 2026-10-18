@@ -10,6 +10,16 @@ lazily (call time) to avoid an import cycle.
 from typing import Any, Dict, Optional
 
 
+def request_max_tokens(model_options):
+    """A request may override its own output budget, preserving the profile default."""
+    if not isinstance(model_options, dict) or 'max_tokens' not in model_options:
+        return None
+    value = model_options['max_tokens']
+    if type(value) is not int or value <= 0:
+        raise ValueError('max_tokens_must_be_positive_integer')
+    return value
+
+
 def _request_reasoning_config(model_options: Any) -> Optional[dict[str, Any]]:
     """Translate model_options (structured ``reasoning`` or legacy ``reasoning_effort``) into
     AIAgent reasoning_config; unknown effort values are ignored, never raised."""

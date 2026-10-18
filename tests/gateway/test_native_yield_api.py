@@ -5,6 +5,7 @@ import os
 import tempfile
 import time
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -30,7 +31,8 @@ class NativeYieldAPITest(unittest.IsolatedAsyncioTestCase):
     async def test_saved_compression_tip_is_restored_and_later_history_change_cannot_resume(self):
         from gateway.platforms.native_yield import build_yield_checkpoint, verify_yield_resume
 
-        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"HERMES_HOME": directory}):
+        with patch.dict(os.environ, {"HERMES_HOME": self.enterContext(tempfile.TemporaryDirectory())}):
+            directory = os.environ["HERMES_HOME"]
             db = SessionDB(Path(directory) / "state.db")
             self.addCleanup(db.close)
             db.create_session("root", "api")
@@ -92,7 +94,7 @@ class NativeYieldAPITest(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(create.call_count, 0)
 
     async def test_yield_restore_and_idempotency_use_the_actual_native_history(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with nullcontext(self.enterContext(tempfile.TemporaryDirectory())) as directory:
             root = Path(directory)
             with patch.dict(os.environ, {'HERMES_HOME': directory, 'HERMES_WRITE_SAFE_ROOT': directory}):
                 db = SessionDB(root / 'state.db')
@@ -124,9 +126,9 @@ class NativeYieldAPITest(unittest.IsolatedAsyncioTestCase):
                     raise AssertionError('native work or summary was replayed')
 
                 def create_agent(**kwargs):
-                    with patch('run_agent.get_tool_definitions', return_value=[
+                    with patch('model_tools.get_tool_definitions', return_value=[
                             {'type': 'function', 'function': WRITE_FILE_SCHEMA}]), \
-                         patch('run_agent.check_toolset_requirements', return_value={}), patch('run_agent.OpenAI'):
+                         patch('model_tools.check_toolset_requirements', return_value={}), patch.object(AIAgent, '_create_openai_client', return_value=MagicMock()):
                         agent = AIAgent(api_key='synthetic', base_url='https://example.invalid/v1/',
                             session_id=kwargs['session_id'], session_db=db, enabled_toolsets=['file'],
                             quiet_mode=True, skip_context_files=True, skip_memory=True)

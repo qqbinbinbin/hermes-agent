@@ -82,6 +82,7 @@ _CAPABILITY_ENDPOINTS = (
     ("chat_completions", ("POST", "/v1/chat/completions")),
     ("responses", ("POST", "/v1/responses")), ("runs", ("POST", "/v1/runs")),
     ("run_status", ("GET", "/v1/runs/{run_id}")),
+    ("run_lookup", ("GET", "/v1/runs/lookup")),
     ("run_events", ("GET", "/v1/runs/{run_id}/events")),
     ("run_approval", ("POST", "/v1/runs/{run_id}/approval")),
     ("run_steer", ("POST", "/v1/runs/{run_id}/steer")),
@@ -333,10 +334,11 @@ def _resolve_request_runtime_agent_kwargs(provider: str, target_model: Optional[
 def _durable_yield_available():
     try:
         from agent import turn_finalizer
-        from gateway.platforms import api_run_store, native_yield
+        from gateway.platforms import api_run_store, api_server_run_idempotency, native_yield
 
         return (getattr(turn_finalizer, "DURABLE_ITERATION_YIELD", False) is True
                 and getattr(api_run_store, "DURABLE_RESUME_CLAIM", False) is True
+                and getattr(api_server_run_idempotency, "DURABLE_RESUME_CLAIM", False) is True
                 and getattr(native_yield, "DURABLE_YIELD_CHECKPOINT", False) is True)
     except ImportError:
         return False
@@ -1181,7 +1183,10 @@ def _run_route_delegate(name: str):
     return _handler
 
 
-class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
+from gateway.platforms.api_server_fuxi import FuxiRuntimeMixin
+
+
+class APIServerAdapter(FuxiRuntimeMixin, OpenAICompatRoutesMixin, BasePlatformAdapter):
     """aiohttp server routing OpenAI-format requests through hermes-agent's AIAgent."""
 
     # Stateless request/response (``send()`` is a stub): async-delivery tools must not promise
@@ -1204,6 +1209,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.API_SERVER)
         extra = config.extra or {}
+        self._initialize_fuxi_runtime(extra)
         self._host, self._port = listen_address(extra)
         self._api_key: str = extra.get("key", _get_scoped_secret("API_SERVER_KEY", ""))
         self._cors_origins: tuple[str, ...] = self._parse_cors_origins(
@@ -2363,6 +2369,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         ``route`` / ``session_model`` are mutually exclusive; ``confirmed_runtime_lock`` beats the
         session ``/model`` override, disables the fallback chain and fails closed."""
         from run_agent import AIAgent
+        from gateway.platforms.api_server_request_options import request_max_tokens
+        output_budget = request_max_tokens(model_options)
         from gateway.run import (
             _checkpoint_agent_kwargs, _current_max_iterations, _resolve_runtime_agent_kwargs,
             _resolve_gateway_model, _load_gateway_config, GatewayRunner)
@@ -2423,6 +2431,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "memory_manager": self._memory_sessions.checkout(session_id)}
         if request_service_tier is not _REQUEST_OPTION_MISSING:
             agent_kwargs["service_tier"] = request_service_tier
+        if output_budget is not None:
+            agent_kwargs['max_tokens'] = output_budget
         agent = AIAgent(**agent_kwargs)
         route_source = (
             "session_model_lock" if confirmed_runtime_lock
@@ -2435,10 +2445,6 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         return agent
 
     # -- HTTP handlers ----------------------------------------------------------------
-
-    async def _handle_health(self, request: web.Request) -> web.Response:
-        """GET /health — simple health check."""
-        return web.json_response({"status": "ok", "platform": "hermes-agent", "version": _hermes_version()})
 
     @_require_auth
     async def _handle_health_detailed(self, request: web.Request) -> web.Response:
@@ -2540,6 +2546,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 "responses_api": True, "responses_streaming": True, "run_submission": True,
                 "runs_idempotency": _api_runs._idempotency_capabilities(self, store_type=RunIdempotencyStore),
                 **_STATIC_FEATURE_FLAGS,
+                **self._fuxi_capability_features(),
                 "cors": bool(self._cors_origins),
                 # Always advertised for feature-detection; enabled follows config.
                 "browser_extension_control": {
@@ -3057,16 +3064,6 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if not session:
             return None, _error_response(f"Session not found: {session_id}", 404, code="session_not_found")
         return session, None
-
-    async def _conversation_history_for_session(self, session_id: str) -> list[dict[str, Any]]:
-        db = await self._ensure_session_db_async()
-        if db is None:
-            return []
-        try:
-            return await asyncio.to_thread(db.get_messages_as_conversation, session_id)
-        except Exception as exc:
-            logger.warning("Failed to load session history for %s: %s", session_id, exc)
-            return []
 
     async def run_internal_session_turn(self, *, session_id: str, text: str, profile: str,
                                         notification_category: str = "result") -> None:
@@ -4419,6 +4416,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         _api_runs._release_run_owner_if_forgotten(self, run_id)
 
     _handle_get_run = _run_route_delegate("_handle_get_run")
+    _handle_lookup_run = _run_route_delegate("_handle_lookup_run")
     _handle_run_events = _run_route_delegate("_handle_run_events")
     _handle_run_approval = _run_route_delegate("_handle_run_approval")
     _handle_steer_run = _run_route_delegate("_handle_steer_run")
@@ -4579,6 +4577,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             # heartbeat loop updates last_heartbeat/metrics_today (#52323).
             self._publish_runtime_status()
             self._track_background_task(asyncio.create_task(self._heartbeat_loop()))
+            self._start_profile_goal_runtime()
             logger.info(
                 "[%s] API server listening on http://%s:%d (model: %s)",
                 self.name, self._host, self._port, self._model_name)
@@ -4598,6 +4597,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         files, #37011).
         """
         self._mark_disconnected()
+        await self._stop_profile_goal_runtime()
         # getattr: disconnect() tolerates bare __new__ fixtures (pinned in test_api_server_run_idempotency).
         routed = getattr(self, "_response_stores", {})
         stores = [s for s in (getattr(self, "_response_store", None), *list(routed.values())) if s is not None]

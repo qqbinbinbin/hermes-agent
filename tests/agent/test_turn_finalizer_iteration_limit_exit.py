@@ -54,6 +54,9 @@ class _LimitAgent:
     def _emit_status(self, *_args, **_kwargs):
         pass
 
+    def _emit_diagnostic_status(self, *_args, **_kwargs):
+        pass
+
     def _safe_print(self, *_args, **_kwargs):
         pass
 
@@ -93,6 +96,7 @@ def _finalize(
     *,
     final_response,
     exit_reason,
+    messages=None,
     api_call_count=60,
     pending_verification_response=None,
 ):
@@ -102,7 +106,7 @@ def _finalize(
         api_call_count=api_call_count,
         interrupted=False,
         failed=False,
-        messages=[{"role": "user", "content": "task"}],
+        messages=messages if messages is not None else [{"role": "user", "content": "task"}],
         conversation_history=[],
         effective_task_id="task",
         turn_id="turn",
@@ -274,6 +278,20 @@ def test_bounded_fallback_records_kanban_failure_when_interrupted(monkeypatch):
     assert kwargs["event_payload_extra"]["budget_max"] == 60
 
 
+def test_iteration_limit_yield_returns_native_yield_result(monkeypatch):
+    """A native yield must reach the result contract without an extra summary call."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = _LimitAgent()
+    agent._iteration_limit_action = "yield"
+
+    result = _finalize(agent, final_response=None, exit_reason="unknown")
+
+    assert result["turn_exit_reason"] == "iteration_limit_yield"
+    assert result["yielded"] is True
+    assert result["completed"] is False
+    assert agent._handle_max_iterations_called is False
+
+
 def test_bounded_fallback_records_kanban_failure_when_failed(monkeypatch):
     """When budget is exhausted and the turn failed,
     the bounded fallback must still record a terminal kanban failure (#87096).
@@ -417,3 +435,22 @@ def test_finalize_turn_starts_the_title_upgrade_the_prologue_held_back():
     _finalize(agent, final_response="done", exit_reason="text_response(1)", api_call_count=1)
     assert ran.wait(timeout=5), "deferred title upgrade never started"
     assert agent._deferred_title_upgrade is None
+
+
+def test_iteration_yield_preserves_pending_tool_history(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = _LimitAgent(completion_explainer=True)
+    agent._iteration_limit_action = "yield"
+    messages = [
+        {"role": "user", "content": "task"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "one", "type": "function", "function": {"name": "write_file", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "one", "name": "write_file", "content": "saved"},
+    ]
+    result = _finalize(agent, final_response=None, exit_reason="unknown", messages=messages)
+    assert result["turn_exit_reason"] == "iteration_limit_yield"
+    assert result["yielded"] is True
+    assert result["failed"] is False
+    assert result["final_response"] is None
+    assert [m["role"] for m in result["messages"]] == ["user", "assistant", "tool"]
+    assert agent._handle_max_iterations_called is False

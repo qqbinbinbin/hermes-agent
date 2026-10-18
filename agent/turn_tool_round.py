@@ -40,6 +40,7 @@ class ToolRoundVerdict:
     compression_attempts: Any
     final_response: Any
     failed: Any
+    interrupted: Any
     _turn_exit_reason: Any
     truncated_tool_call_retries: Any
     current_turn_user_idx: Any
@@ -52,6 +53,7 @@ def run_tool_round(
     system_message: Any, active_system_prompt: Any, compression_attempts: Any,
     max_compression_attempts: Any, final_response: Any, failed: Any, _turn_exit_reason: Any,
     truncated_tool_call_retries: Any, current_turn_user_idx: Any,
+    interrupted: Any, turn_id: Any,
 ) -> ToolRoundVerdict:
     """Execute one tool round in the exact original order. Persist-before-execute is a
     durability invariant: resume must see the executed block if a destructive tool restarts
@@ -64,6 +66,7 @@ def run_tool_round(
             action=action, messages=messages, conversation_history=conversation_history,
             active_system_prompt=active_system_prompt, compression_attempts=compression_attempts,
             final_response=final_response, failed=failed, _turn_exit_reason=_turn_exit_reason,
+            interrupted=interrupted,
             truncated_tool_call_retries=truncated_tool_call_retries,
             current_turn_user_idx=current_turn_user_idx, result=result,
         )
@@ -110,6 +113,7 @@ def run_tool_round(
     assistant_msg, duplicate_previous_interim = stage_tool_call_message(
         agent, assistant_message=assistant_message, finish_reason=finish_reason, messages=messages
     )
+    tool_batch_start = len(messages)
     append_message(messages, assistant_msg)
 
     # Mixed batch: error-result invalid calls and drop them from execution.
@@ -190,6 +194,13 @@ def run_tool_round(
                 with suppress(Exception):
                     agent.stream_delta_callback(final_response)
                     agent.stream_delta_callback(None)
+        return _verdict("break")
+
+    completion, reason, completion_failed, completion_interrupted = _completion_outcome(
+        agent, messages[tool_batch_start:], effective_task_id, turn_id, api_call_count)
+    if reason:
+        final_response, _turn_exit_reason = completion, reason
+        failed, interrupted = completion_failed, completion_interrupted
         return _verdict("break")
 
     # Reset per-turn retry counters so one truncation can't poison the turn.
@@ -311,3 +322,17 @@ def stage_tool_call_message(
         and agent._interim_assistant_visible_text(previous_msg) == current_interim_visible
     )
     return assistant_msg, duplicate_previous_interim
+
+
+def _completion_outcome(agent, messages, task_id, turn_id, api_call_count):
+    from hermes_cli.middleware import resolve_tool_batch_completion
+    completion = None
+    if not agent._interrupt_requested:
+        completion = resolve_tool_batch_completion(messages=messages, task_id=task_id, turn_id=turn_id)
+    if agent._interrupt_requested:
+        return None, "interrupted_after_tools", False, True
+    if completion:
+        if api_call_count > agent.max_iterations:
+            return "", "budget_exhausted", True, False
+        return completion, "native_tool_completion", False, False
+    return None, None, False, False

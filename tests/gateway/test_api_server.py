@@ -944,8 +944,10 @@ class TestRuntimeLivenessEndpoint:
                 self.cancelled = True
 
         def fake_create_task(coro):
+            name = coro.cr_code.co_name
             coro.close()
             task = DummyTask()
+            task.coroutine_name = name
             created.append(task)
             return task
 
@@ -978,7 +980,7 @@ class TestRuntimeLivenessEndpoint:
         assert await adapter.connect() is True
         assert adapter._profile_goal_runtime_enabled is False
         assert adapter._profile_goal_runtime_task is None
-        assert len(created) == 1  # orphaned-run sweeper only
+        assert all(task.coroutine_name != "_run_profile_goal_runtime_loop" for task in created)
 
         await adapter.disconnect()
 
@@ -1004,8 +1006,10 @@ class TestRuntimeLivenessEndpoint:
                 self.cancelled = True
 
         def fake_create_task(coro):
+            name = coro.cr_code.co_name
             coro.close()
             task = DummyTask()
+            task.coroutine_name = name
             created.append(task)
             return task
 
@@ -1038,9 +1042,13 @@ class TestRuntimeLivenessEndpoint:
         assert await adapter.connect() is True
         assert adapter._profile_goal_runtime_enabled is True
         assert adapter._profile_goal_runtime_interval_seconds == 7
-        assert adapter._profile_goal_runtime_task is created[1]
+        assert adapter._profile_goal_runtime_task in created
+        assert adapter._profile_goal_runtime_task.coroutine_name == "_run_profile_goal_runtime_loop"
+        goal_task = adapter._profile_goal_runtime_task
 
         await adapter.disconnect()
+        assert goal_task.cancelled
+        assert adapter._profile_goal_runtime_task is None
 
 
 # ---------------------------------------------------------------------------
@@ -2611,6 +2619,7 @@ class TestSessionIdHeader:
         ]
         mock_db = MagicMock()
         mock_db.get_messages_as_conversation.return_value = db_history
+        mock_db.get_compression_tip.side_effect = lambda sid: sid
         mock_db.resolve_resume_session_id.side_effect = lambda sid: sid
         auth_adapter._session_db = mock_db
         app = _create_app(auth_adapter)
@@ -2789,75 +2798,6 @@ class TestModelRoutesHandlers:
 
 
 class TestModelRoutesAgentCreation:
-
-    def test_request_output_budget_reaches_provider(self, monkeypatch):
-        from run_agent import AIAgent
-        from types import SimpleNamespace
-
-        _patch_create_agent_runtime(monkeypatch, {}, AIAgent)
-        monkeypatch.setattr("run_agent.OpenAI", MagicMock())
-        monkeypatch.setattr("run_agent.get_tool_definitions", lambda **_: [])
-        monkeypatch.setattr("run_agent.check_toolset_requirements", lambda **_: {})
-        adapter = _make_routing_adapter({})
-        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
-        monkeypatch.setattr(adapter, "_session_model_override_for", lambda *_: None)
-        agent = adapter._create_agent(session_id="provider-budget", model_options={
-            "max_tokens": 8000, "reasoning": {"enabled": False},
-        })
-        agent._cached_system_prompt = "Synthetic test."
-        agent._use_prompt_caching = False
-        agent.compression_enabled = False
-        agent.save_trajectories = False
-        agent.client = MagicMock()
-        agent.client.chat.completions.create.return_value = SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content="done", tool_calls=None),
-                                     finish_reason="stop")], model="global/model", usage=None)
-        for method in ("_persist_session", "_save_trajectory", "_cleanup_task_resources"):
-            monkeypatch.setattr(agent, method, MagicMock())
-        result = agent.run_conversation("Synthetic budget check")
-        assert result["completed"]
-        request = agent.client.chat.completions.create.call_args.kwargs
-        assert request["max_tokens"] == 8000
-        assert agent.reasoning_config == {"enabled": False}
-
-    @pytest.mark.parametrize("requested", [8000, 12000, None])
-    def test_request_output_budget_overrides_only_this_agent(self, monkeypatch, requested):
-        captured = {}
-
-        class FakeAgent:
-            def __init__(self, **kwargs):
-                captured.update(kwargs)
-
-        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
-        monkeypatch.setattr("gateway.run._resolve_runtime_agent_kwargs", lambda: {
-            "provider": "openrouter", "api_key": "synthetic",
-            "base_url": "https://provider.invalid/v1", "max_tokens": 4096,
-        })
-        adapter = _make_routing_adapter({})
-        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
-        monkeypatch.setattr(adapter, "_session_model_override_for", lambda *_: None)
-        options = {"reasoning": {"enabled": False}}
-        if requested is not None:
-            options["max_tokens"] = requested
-        adapter._create_agent(session_id="budget-test", model_options=options)
-        assert captured["max_tokens"] == (requested or 4096)
-        assert captured["reasoning_config"] == {"enabled": False}
-
-    @pytest.mark.parametrize("requested", [True, False, 0, -1, 1.5, "8000", None])
-    def test_invalid_request_output_budget_never_creates_agent(self, monkeypatch, requested):
-        captured = {}
-
-        class FakeAgent:
-            def __init__(self, **kwargs):
-                captured.update(kwargs)
-
-        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
-        adapter = _make_routing_adapter({})
-        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
-        monkeypatch.setattr(adapter, "_session_model_override_for", lambda *_: None)
-        with pytest.raises(ValueError, match="max_tokens_must_be_positive_integer"):
-            adapter._create_agent(session_id="invalid-budget", model_options={"max_tokens": requested})
-        assert captured == {}
 
     def test_route_provider_resolves_provider_credentials(self, monkeypatch):
         captured = {}

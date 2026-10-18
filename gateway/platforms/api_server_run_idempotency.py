@@ -17,6 +17,8 @@ from hermes_cli.sqlite_util import add_column_if_missing
 logger = logging.getLogger("gateway.platforms.api_server")
 
 TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "interrupted"})
+SETTLED_STATUSES = TERMINAL_STATUSES | {"paused"}
+DURABLE_RESUME_CLAIM = True
 
 _SELECT_BY_KEY = (
     "SELECT fingerprint, run_id, status_json, owner_pid, owner_started, updated_at "
@@ -131,7 +133,8 @@ class RunIdempotencyStore:
                 raise
 
     def reserve(self, scope: str, key: str, fingerprint: str, run_id: str, status: dict[str, Any], *,
-                owner_pid: int = 0, owner_started: int = 0, retention_until: float = 0):
+                owner_pid: int = 0, owner_started: int = 0, retention_until: float = 0,
+                resume_claim: dict | None = None):
         """Atomically reserve a key; return ``(outcome, stored_record)``."""
         now = time.time()
         retention_until = max(0.0, float(retention_until or 0))
@@ -144,6 +147,21 @@ class RunIdempotencyStore:
                     self._conn.execute(_EXTEND_RETENTION_BY_KEY, (retention_until, scope, key, fingerprint))
                 self._conn.commit()
                 return _outcome(row, fingerprint)
+            if resume_claim is not None:
+                parent = self._conn.execute(
+                    "SELECT status_json FROM run_idempotency WHERE scope=? AND run_id=?",
+                    (scope, resume_claim['run_id'])).fetchone()
+                parent_status = json.loads(parent[0]) if parent else {}
+                checkpoint = parent_status.get('continuation') or {}
+                if (not self.durable or parent_status.get('status') != 'paused'
+                        or parent_status.get('resumed_by')
+                        or checkpoint.get('checkpointSha256') != resume_claim['checkpoint_sha256']):
+                    self._conn.commit()
+                    return 'resume_conflict', None
+                parent_status['resumed_by'] = run_id
+                self._conn.execute(
+                    "UPDATE run_idempotency SET status_json=?, updated_at=? WHERE scope=? AND run_id=?",
+                    (_encode_status(parent_status), now, scope, resume_claim['run_id']))
             self._conn.execute(
                 "INSERT INTO run_idempotency("
                 "scope,idempotency_key,fingerprint,run_id,status_json,"
@@ -165,6 +183,12 @@ class RunIdempotencyStore:
             row = self._conn.execute(_SELECT_BY_KEY, (scope, key)).fetchone()
             self._conn.commit()
         return ("missing", None) if row is None else _outcome(row, fingerprint)
+
+    def lookup_key(self, scope: str, key: str):
+        """Read accepted work without reserving or resubmitting it."""
+        with self._lock:
+            row = self._conn.execute(_SELECT_BY_KEY, (scope, key)).fetchone()
+        return None if row is None else _record(*row[1:])
 
     def _prune_stale_terminal_locked(self, now: float) -> None:
         """Prune aged replay records only once their stored run is terminal (caller holds the
@@ -218,7 +242,14 @@ class RunIdempotencyStore:
         return row is not None
 
     def update_status(self, run_id: str, status: dict[str, Any]) -> None:
-        with self._lock:
+        with self._immediate_txn():
+            row = self._conn.execute(
+                "SELECT status_json FROM run_idempotency WHERE run_id=?", (run_id,)).fetchone()
+            stored = json.loads(row[0]) if row else {}
+            if stored.get("resumed_by"):
+                # The admission transaction owns this claim. A stale worker's
+                # later status write must never make the parent claimable again.
+                status = {**status, "resumed_by": stored["resumed_by"]}
             self._conn.execute(
                 "UPDATE run_idempotency SET status_json=?, updated_at=? WHERE run_id=?",
                 (_encode_status(status), time.time(), run_id))

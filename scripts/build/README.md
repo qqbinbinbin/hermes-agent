@@ -256,6 +256,7 @@ python -m pm.build_env --source /work/source \
 | `--source`, `--out` | Required prepared source and fresh environment destination |
 | `--python` | Optional build interpreter; otherwise PM selects its pinned Python |
 | `--cache` | Optional build cache directory; otherwise PM selects its cache |
+| `--timeout` | Positive integer project dependency-sync budget in seconds; default 1800 |
 | `--group` | Repeatable build/test dependency-group selection |
 | `--sealed` | Prune build-time editable and virtualenv marker `.pth` files |
 | `--extra` | Repeatable extra selection |
@@ -268,6 +269,12 @@ pre-existing environment. Success prints its Python executable. The CLI is an
 explicit build request. The Python
 function `pm.build_environment` accepts the same semantic inputs and an optional
 explicit build `env` mapping. It returns the same executable as a `Path`.
+
+The FUXI CLI timeout option forwards the existing project-build API deadline.
+For example, `--timeout 7200` bounds project dependency sync to two hours. It
+does not change requirements builds or lock operations. `UV_HTTP_TIMEOUT`
+controls HTTP transport separately; neither setting bounds the entire Docker
+build. Apply a separate end-to-end deadline to the build runner.
 
 PM owns pinned installer acquisition, environment creation, frozen workspace
 sync, dependency checks, and failure cleanup. Callers never resolve or pass a uv

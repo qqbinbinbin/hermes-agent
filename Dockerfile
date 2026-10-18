@@ -72,6 +72,16 @@ ENV UV_LINK_MODE=copy
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/tools
 
 # Install system dependencies in one layer, clear APT cache.
+# FUXI connected builds use the controlled Aliyun mirror in every runtime
+# stage; sqlite_build already establishes this source policy above.
+RUN rm -f /etc/apt/sources.list.d/debian.sources && \
+    printf '%s\n' \
+        'deb http://mirrors.aliyun.com/debian trixie main contrib non-free non-free-firmware' \
+        'deb http://mirrors.aliyun.com/debian trixie-updates main contrib non-free non-free-firmware' \
+        'deb http://mirrors.aliyun.com/debian-security trixie-security main contrib non-free non-free-firmware' \
+        > /etc/apt/sources.list && \
+    printf 'Acquire::ForceIPv4 "true";\nAcquire::Retries "2";\nAcquire::http::Timeout "30";\n' > /etc/apt/apt.conf.d/99fuxi-timeouts
+
 # tini was previously PID 1 to reap orphaned zombie processes (MCP stdio
 # subprocesses, git, bun, etc.) that would otherwise accumulate when hermes
 # ran as PID 1. See #15012. Phase 2 of the s6-overlay supervision plan
@@ -184,6 +194,12 @@ COPY --chmod=0755 docker/tini-shim.sh /usr/bin/tini
 
 RUN useradd -u 10000 -m -d /opt/data hermes
 
+# FUXI connected builds must consume the prepared, hash-verified uv binary from
+# the build context. PM remains the toolchain authority: after provisioning,
+# compare both prepared binaries with PM's verified pin before any build use.
+COPY --chmod=0755 .fuxi-build-tools/uv .fuxi-build-tools/uvx /usr/local/bin/
+RUN uv --version && uvx --version
+
 
 WORKDIR /opt/hermes
 
@@ -220,6 +236,9 @@ COPY hermes_cli/__init__.py hermes_cli/runtime_state.py hermes_cli/
 COPY scripts/bundles/payload.py scripts/bundles/payload.py
 RUN set -eu; \
     python3 -c 'from pm import ensure; [ensure(name, explicit=True) for name in ("uv", "chromium", "npm", "ffmpeg", "ripgrep")]'; \
+    pm_uv="$(python3 -c 'from pm._uv import _toolchain; print(_toolchain(realize=False)[0])')"; \
+    cmp /usr/local/bin/uv "$pm_uv"; \
+    cmp /usr/local/bin/uvx "$(dirname "$pm_uv")/uvx"; \
     python3 -c 'from pathlib import Path; from pm import installed_package; [Path("/usr/local/bin", command).symlink_to(installed_package(package).binary) for command, package in (("python3", "python"), ("node", "node"), ("npm", "npm"), ("ffmpeg", "ffmpeg"), ("rg", "ripgrep"))]; Path("/usr/local/bin/ffprobe").symlink_to(installed_package("ffmpeg").binary.with_name("ffprobe"))'; \
     ffmpeg -version >/dev/null; ffprobe -version >/dev/null; rg --version >/dev/null; \
     python3 -c 'import shutil; from pathlib import Path; from pm import env_for; Path("/usr/local/bin/npx").symlink_to(shutil.which("npx", path=env_for("npm", base_env={})["PATH"]))'; \
@@ -296,7 +315,7 @@ RUN touch ./README.md
 # stage, so the default is /root/.hermes/cache/uv, which nothing reads. A plugin
 # install then runs with an empty cache and builds python-olm from source.
 RUN python3 -m pm.build_env --source /opt/hermes --python /usr/local/bin/python3 \
-    --cache /opt/hermes/uv-cache \
+    --cache /opt/hermes/uv-cache --timeout 7200 \
     --out /opt/hermes/.venv --no-install-project --sealed --record-selection \
     --extra all --extra messaging --extra otlp --extra anthropic --extra bedrock \
     --extra azure-identity --extra matrix --extra google-chat

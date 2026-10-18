@@ -1477,7 +1477,7 @@ class TestFetchModelMetadata:
         self._isolate_disk_cache(monkeypatch, tmp_path)
         monkeypatch.setenv("HERMES_OPENROUTER_METADATA_NETWORK", "disabled")
 
-        with patch("agent.model_metadata.requests.get") as mock_get:
+        with patch("agent.model_metadata.model_metadata_http.get") as mock_get:
             assert fetch_model_metadata(force_refresh=True) == {}
 
         mock_get.assert_not_called()

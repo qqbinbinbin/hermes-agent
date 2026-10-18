@@ -2528,21 +2528,6 @@ def switch_model(
     _persist_switch_billing_route(agent)
 
 
-def _pre_tool_block_message(agent, function_name, function_args, effective_task_id, tool_call_id, middleware_trace):
-    """Plugin pre-tool-call hook verdict: ``(block_message, function_args)``; failures never block."""
-    try:
-        from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
-        block_message, modified_args = _dispatch_pre_tool_call_hooks(
-            function_name, function_args, task_id=effective_task_id or "",
-            session_id=getattr(agent, "session_id", "") or "", tool_call_id=tool_call_id or "",
-            turn_id=getattr(agent, "_current_turn_id", "") or "",
-            api_request_id=getattr(agent, "_current_api_request_id", "") or "",
-            middleware_trace=list(middleware_trace),
-        )
-        return block_message, (modified_args if modified_args is not None else function_args)
-    except Exception:
-        return None, function_args
-
 
 def invoke_tool(agent, function_name: str, function_args: dict, effective_task_id: str,
                  tool_call_id: Optional[str] = None, messages: list | None = None,
@@ -2555,16 +2540,18 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     invocation for display."""
     from agent.inline_tool_executors import (
         InlineToolContext, apply_transform_tool_result, emit_terminal_post_tool_call,
-        resolve_invoke_tool_executor, tool_hook_ids
+        resolve_invoke_tool_executor, tool_hook_ids, _pre_tool_block_message
     )
     if not isinstance(function_args, dict):
         function_args = {}
     hook_ids = tool_hook_ids(agent, effective_task_id, tool_call_id)
+    from agent.tool_executor import _tool_request_budget
+    middleware_context = dict(hook_ids, request_budget=_tool_request_budget(agent))
     _tool_middleware_trace = list(tool_request_middleware_trace or [])
     try:
         from hermes_cli.middleware import apply_tool_request_middleware
         if not skip_tool_request_middleware:
-            _tool_request_mw = apply_tool_request_middleware(function_name, function_args, **hook_ids)
+            _tool_request_mw = apply_tool_request_middleware(function_name, function_args, **middleware_context)
             function_args = _tool_request_mw.payload
             _tool_middleware_trace = _tool_request_mw.trace
     except Exception as _mw_err:
@@ -2625,7 +2612,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     return run_tool_execution_middleware(
         function_name, function_args,
         lambda next_args: _execute(next_args if isinstance(next_args, dict) else function_args),
-        original_args=function_args, **hook_ids,
+        original_args=function_args, **middleware_context,
     )
 
 

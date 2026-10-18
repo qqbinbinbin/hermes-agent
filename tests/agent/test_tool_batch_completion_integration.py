@@ -30,8 +30,8 @@ class NativeLoopCompletionTests(unittest.TestCase):
     def run_case(self, decision, *, persistence_failed=False, cancel=False, max_iterations=10):
         definitions = [{"type": "function", "function": {"name": "write_file",
                        "description": "test", "parameters": {"type": "object", "properties": {}}}}]
-        with patch("run_agent.get_tool_definitions", return_value=definitions), \
-             patch("run_agent.check_toolset_requirements", return_value={}), patch("run_agent.OpenAI"):
+        with patch("model_tools.get_tool_definitions", return_value=definitions), \
+             patch("model_tools.check_toolset_requirements", return_value={}), patch.object(AIAgent, "_create_openai_client", return_value=MagicMock()):
             agent = AIAgent(api_key="synthetic", base_url="https://example.invalid/v1/",
                             quiet_mode=True, skip_context_files=True, skip_memory=True)
         agent._cached_system_prompt = "Synthetic test."
@@ -55,11 +55,11 @@ class NativeLoopCompletionTests(unittest.TestCase):
                 agent._interrupt_requested = True
             return decision
 
-        with patch("run_agent.handle_function_call", side_effect=tool), \
+        with patch("model_tools.handle_function_call", side_effect=tool), \
              patch.object(agent, "_persist_session"), patch.object(agent, "_save_trajectory"), \
              patch.object(agent, "_cleanup_task_resources"), \
-             patch("hermes_cli.middleware._has_middleware", side_effect=lambda kind: kind == "tool_batch_completion"), \
-             patch("hermes_cli.middleware._invoke_middleware", side_effect=vote) as middleware:
+             patch("hermes_cli.plugins.has_middleware", side_effect=lambda kind: kind == "tool_batch_completion"), \
+             patch("hermes_cli.plugins.invoke_middleware", side_effect=vote) as middleware:
             result = agent.run_conversation("submit synthetic receipt")
         return result, agent, middleware
 

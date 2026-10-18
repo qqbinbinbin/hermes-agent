@@ -24,7 +24,8 @@ TOOL_BATCH_COMPLETION_MIDDLEWARE = "tool_batch_completion"
 TOOL_EXECUTION_REQUEST_BUDGET = True
 
 VALID_MIDDLEWARE: set[str] = {
-    TOOL_REQUEST_MIDDLEWARE, TOOL_EXECUTION_MIDDLEWARE, LLM_REQUEST_MIDDLEWARE, LLM_EXECUTION_MIDDLEWARE,
+    TOOL_REQUEST_MIDDLEWARE, TOOL_EXECUTION_MIDDLEWARE, LLM_REQUEST_MIDDLEWARE,
+    LLM_EXECUTION_MIDDLEWARE, TOOL_BATCH_COMPLETION_MIDDLEWARE,
 }
 
 
@@ -36,9 +37,11 @@ def resolve_tool_batch_completion(*, messages, task_id, turn_id):
     Multiple or malformed decisions cannot end the loop. Absent plugins leave
     the ordinary provider loop unchanged.
     """
-    if not _has_middleware(TOOL_BATCH_COMPLETION_MIDDLEWARE):
+    from hermes_cli.plugins import has_middleware, invoke_middleware
+
+    if not has_middleware(TOOL_BATCH_COMPLETION_MIDDLEWARE):
         return None
-    results = _invoke_middleware(
+    results = invoke_middleware(
         TOOL_BATCH_COMPLETION_MIDDLEWARE, messages=deepcopy(messages),
         task_id=task_id, turn_id=turn_id,
     )

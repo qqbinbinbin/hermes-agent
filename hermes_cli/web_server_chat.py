@@ -139,23 +139,21 @@ _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
 def _ws_client_reason(ws: WebSocket) -> Optional[str]:
     """Return a rejection reason token for the peer IP, or None when allowed.
 
-    Loopback bind: only loopback peers (the legacy ``?token=`` is the only auth,
-    LAN hosts must not get to guess it); an empty peer fails closed.  Explicit
-    non-loopback bind (``--insecure``) or gated mode: any peer — DNS-rebinding is
-    blocked by :func:`_ws_host_origin_reason`, and in gated mode
-    ``ws.client.host`` is the X-Forwarded-For value anyway.
+    Remote peers require an explicit public bind or auth gate plus the FUXI
+    remote-chat opt-in. Host, Origin and session authentication still apply.
     """
     from hermes_cli.web_server import app
-    if getattr(app.state, "auth_required", False):
-        return None
     bound_host = (getattr(app.state, "bound_host", "") or "").strip().lower()
-    if bound_host and bound_host not in _LOOPBACK_HOSTS:
-        return None
+    public = getattr(app.state, "auth_required", False) or (bound_host and bound_host not in _LOOPBACK_HOSTS)
     client_host = ws.client.host if ws.client else ""
     if not client_host:
-        return f"missing_or_empty_peer bound={bound_host or '?'}"
+        return None if public else f"missing_or_empty_peer bound={bound_host or '?'}"
     if client_host in _LOOPBACK_HOSTS:
         return None
+    if public and os.environ.get("HERMES_DASHBOARD_ALLOW_REMOTE_CHAT_WS") == "1":  # health: allow HX002 -- preserved single-profile dashboard deployment opt-in
+        return None
+    if public:
+        return f"remote_chat_ws_disabled peer={client_host}"
     return f"peer_not_loopback peer={client_host} bound={bound_host or '?'}"
 
 

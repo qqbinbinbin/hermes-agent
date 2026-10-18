@@ -7,6 +7,13 @@ from pathlib import Path
 import sys
 
 
+def _positive_timeout(value: str) -> int:
+    seconds = int(value)
+    if seconds <= 0:
+        raise argparse.ArgumentTypeError("timeout must be a positive number of seconds")
+    return seconds
+
+
 def _record_selection(source: Path, extras: list[str]) -> None:
     """Publish the built extras as the store's venv selection, as a bundle build does.
 
@@ -47,6 +54,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--all-extras", action="store_true")
     parser.add_argument("--no-install-project", action="store_true")
     parser.add_argument("--resolve", action="store_true", help="resolve the source lock before building")
+    parser.add_argument("--timeout", type=_positive_timeout, default=1800,
+                        help="project dependency sync timeout in seconds (default: 1800)")
     operation = parser.add_mutually_exclusive_group()
     operation.add_argument("--lock-only", action="store_true")
     operation.add_argument("--check-lock", action="store_true")
@@ -127,7 +136,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 source=args.source, out=args.out, python=args.python, cache=args.cache,
                 extras=args.extras, groups=args.groups, all_extras=args.all_extras,
                 no_install_project=args.no_install_project, frozen=not args.resolve,
-                sealed=args.sealed, offline=args.offline, explicit=True,
+                sealed=args.sealed, offline=args.offline, explicit=True, timeout=args.timeout,
             )
             if args.record_selection:
                 _record_selection(args.source, args.extras)

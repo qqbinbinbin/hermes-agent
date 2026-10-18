@@ -394,7 +394,7 @@ class TestWsRequestIsAllowedGated:
         monkeypatch.setenv("HERMES_DASHBOARD_ALLOW_REMOTE_CHAT_WS", "1")
         ws = _fake_ws(query={}, client_host="203.0.113.7")
         ws.headers = {"host": "fly-app.fly.dev"}
-        assert web_server._ws_request_is_allowed(ws) is True
+        assert _web_server_chat._ws_request_is_allowed(ws) is True
 
     def test_non_loopback_peer_rejected_without_remote_chat_ws_flag(
         self,
@@ -404,7 +404,7 @@ class TestWsRequestIsAllowedGated:
         monkeypatch.delenv("HERMES_DASHBOARD_ALLOW_REMOTE_CHAT_WS", raising=False)
         ws = _fake_ws(query={}, client_host="203.0.113.7")
         ws.headers = {"host": "fly-app.fly.dev"}
-        assert web_server._ws_request_is_allowed(ws) is False
+        assert _web_server_chat._ws_request_is_allowed(ws) is False
 
 
     def test_non_loopback_peer_rejected_in_loopback_mode(self, loopback_app):

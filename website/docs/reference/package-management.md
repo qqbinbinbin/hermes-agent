@@ -510,6 +510,12 @@ builds use the committed lock. `--resolve` resolves before building. `--python`
 selects an explicit build interpreter. `--sealed` removes build-time `.pth`
 references. `--offline` and `--cache` control dependency acquisition.
 
+The FUXI build CLI also accepts `--timeout SECONDS` for project dependency sync.
+It requires a positive integer and defaults to 1800 seconds, matching the Python
+API. `--timeout 7200` allows two hours for that sync; requirements builds and
+lock operations retain their existing behavior. This is separate from
+`UV_HTTP_TIMEOUT` (HTTP transport) and from an end-to-end Docker build deadline.
+
 For application environment builds, PM must already be able to start in the
 invoking Python. These builds are not an interpreter bootstrap. They do not modify a running application's
 imports or replace its selected environment. Nix's declarative uv2nix builds

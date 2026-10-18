@@ -4,6 +4,13 @@ from __future__ import annotations
 from contextlib import contextmanager
 
 
+def openrouter_network_enabled() -> bool:
+    from gateway.platforms._shared import get_scoped_secret
+
+    value = get_scoped_secret('HERMES_OPENROUTER_METADATA_NETWORK', '')
+    return str(value).strip().lower() not in {'disabled', 'off', 'false', '0', 'no'}
+
+
 def resolve_verify(base_url: str = ""):
     from agent.ssl_verify import resolve_httpx_verify
 

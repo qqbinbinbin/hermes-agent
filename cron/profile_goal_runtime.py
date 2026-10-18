@@ -12,7 +12,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-import yaml
+from utils import fast_safe_load
 
 from hermes_constants import get_hermes_home
 
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 def _load_spec(path: Path) -> dict[str, Any] | None:
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        data = fast_safe_load(path.read_text(encoding="utf-8"))
     except Exception:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
@@ -74,7 +74,7 @@ def sync_profile_goal_cron_specs(profile_dir: Path | None = None) -> dict[str, i
     Returns counters for observability: ``loaded``, ``created``, ``updated``,
     and ``skipped``.
     """
-    from cron.jobs import create_job, get_job, load_jobs, save_jobs, update_job
+    from cron.jobs import _jobs_lock
 
     root = profile_dir or get_hermes_home()
     cron_dir = root / "cron"
@@ -95,23 +95,28 @@ def sync_profile_goal_cron_specs(profile_dir: Path | None = None) -> dict[str, i
 
         updates = _job_updates_from_spec({**spec, "id": job_id})
         summary["loaded"] += 1
-        if get_job(job_id):
-            update_job(job_id, updates)
-            summary["updated"] += 1
-            continue
-
-        create_kwargs = dict(updates)
-        enabled = bool(create_kwargs.pop("enabled", True))
-        state = str(create_kwargs.pop("state", "scheduled"))
-        job = create_job(**create_kwargs)
-        raw_jobs = load_jobs()
-        for raw in raw_jobs:
-            if raw.get("id") == job["id"]:
-                raw["id"] = job_id
-                raw["enabled"] = enabled
-                raw["state"] = state
-                break
-        save_jobs(raw_jobs)
-        summary["created"] += 1
+        with _jobs_lock():
+            outcome = _sync_spec_job(job_id, updates)
+        summary[outcome] += 1
 
     return summary
+
+
+def _sync_spec_job(job_id, updates):
+    from cron.jobs import create_job, get_job, load_jobs, save_jobs, update_job
+    if get_job(job_id):
+        update_job(job_id, updates)
+        return 'updated'
+    create_kwargs = dict(updates)
+    enabled = bool(create_kwargs.pop('enabled', True))
+    state = str(create_kwargs.pop('state', 'scheduled'))
+    job = create_job(**create_kwargs, paused=not enabled)
+    raw_jobs = load_jobs()
+    for raw in raw_jobs:
+        if raw.get('id') == job['id']:
+            raw.update(id=job_id, enabled=enabled, state=state)
+            break
+    # Explicitly retire the generated identity; the upstream stale-writer guard
+    # otherwise preserves it beside the stable spec identity, firing twice.
+    save_jobs(raw_jobs, removed_ids={job['id']})
+    return 'created'

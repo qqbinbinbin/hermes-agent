@@ -813,11 +813,13 @@ def _run_agent_tool_execution_middleware(
     _authorized_dispatch = bind_prepared_dispatch(_authorized_dispatch)
 
     def _hermes_pipeline(relay_args: dict[str, Any]) -> Any:
+        context = tool_hook_ids(agent, effective_task_id, tool_call_id)
+        context["request_budget"] = _tool_request_budget(agent)
         request_result = apply_tool_request_middleware(
             function_name,
             relay_args,
             skip_relay=True,
-            **tool_hook_ids(agent, effective_task_id, tool_call_id),
+            **context,
         )
         request_args = request_result.payload if isinstance(request_result.payload, dict) else relay_args
         trace.clear()
@@ -827,7 +829,7 @@ def _run_agent_tool_execution_middleware(
             request_args,
             lambda next_args: _authorized_dispatch(next_args if isinstance(next_args, dict) else request_args),
             original_args=function_args,
-            **tool_hook_ids(agent, effective_task_id, tool_call_id),
+            **context,
         )
 
     state.result, _relay_args = relay_tools.execute(
