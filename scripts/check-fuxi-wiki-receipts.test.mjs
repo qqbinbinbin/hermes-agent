@@ -3,6 +3,18 @@ import fs from 'node:fs';
 import test from 'node:test';
 
 const skill = fs.readFileSync(new URL('../skills/research/llm-wiki-fuxi/SKILL.md', import.meta.url), 'utf8');
+
+test('source location and template state are reconciled by the maintained Chinese Skill', () => {
+  assert.match(skill, /当前阅读器没有行号锚点合同/);
+  assert.match(skill, /不能仅凭事实数为零推断为空/);
+  assert.match(skill, /相关实体页、概念页、索引摘要及交叉链接说明/);
+  const links = fs.readFileSync(new URL('../skills/research/llm-wiki-fuxi/references/link-correction.md', import.meta.url), 'utf8');
+  assert.match(links, /证据行号不是来源包装页锚点/);
+  assert.match(links, /\[\^requirement-a\]:.*\[\[raw\/material-a.md\|合成来源资料\]\].*B8:E8/);
+  const fields = fs.readFileSync(new URL('../skills/research/llm-wiki-fuxi/references/field-fidelity.md', import.meta.url), 'utf8');
+  assert.match(fields, /模板现状必须与关联页面一致/);
+  assert.match(fields, /是否创建页面或如何调整关系仍由你判断/);
+});
 function examples() {
   const section = skill.split('### 按实际结果选择回执')[1]?.split('## 持续维护')[0] || '';
   return [...section.matchAll(/```json\s*([\s\S]*?)```/g)].map(match => JSON.parse(match[1]));

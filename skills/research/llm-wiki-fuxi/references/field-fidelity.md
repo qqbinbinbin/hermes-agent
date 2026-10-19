@@ -26,16 +26,22 @@
 以下两步演示更正已有事实引用，名称、要求与坐标均不改变；不是客户页面，也不是固定主题。
 
 ```json
-{"tool":"write_file","path":"concepts/reference-check.md","content":"---\ntitle: 合成引用核对\ncreated: 2026-01-01\nupdated: 2026-01-01\ntype: concept\ntags: [合成]\nsources: [raw/source.md]\nfactRefs: [\"fact:sheet-2::row-8-col-2\"]\n---\n\n# 合成引用核对\n\n项目甲，要求 2 小时。工作表 sheet-2，坐标 B8。fact:sheet-2::row-8-col-2。\n"}
+{"tool":"write_file","path":"concepts/reference-check.md","content":"---\ntitle: 合成引用核对\ncreated: 2026-01-01\nupdated: 2026-01-01\ntype: concept\ntags: [合成]\nsources: [raw/source.md]\nfactRefs: [\"fact:sheet-2::row-8-col-2\"]\n---\n\n# 合成引用核对\n\n项目甲，要求 2 小时。[^requirement]\n\n[^requirement]: [[raw/source|合成来源]]，工作表 sheet-2，坐标 B8。fact:sheet-2::row-8-col-2。\n"}
 ```
 
 ```json
-{"tool":"patch","path":"concepts/reference-check.md","old_string":"factRefs: [\"fact:sheet-2::row-8-col-2\"]\n---\n\n# 合成引用核对\n\n项目甲，要求 2 小时。工作表 sheet-2，坐标 B8。fact:sheet-2::row-8-col-2。","new_string":"factRefs: [\"fact:sheet-2:verified-record-1\"]\n---\n\n# 合成引用核对\n\n项目甲，要求 2 小时。工作表 sheet-2，坐标 B8。fact:sheet-2:verified-record-1。"}
+{"tool":"patch","path":"concepts/reference-check.md","old_string":"factRefs: [\"fact:sheet-2::row-8-col-2\"]\n---\n\n# 合成引用核对\n\n项目甲，要求 2 小时。[^requirement]\n\n[^requirement]: [[raw/source|合成来源]]，工作表 sheet-2，坐标 B8。fact:sheet-2::row-8-col-2。","new_string":"factRefs: [\"fact:sheet-2:verified-record-1\"]\n---\n\n# 合成引用核对\n\n项目甲，要求 2 小时。[^requirement]\n\n[^requirement]: [[raw/source|合成来源]]，工作表 sheet-2，坐标 B8。fact:sheet-2:verified-record-1。"}
 ```
 
 另一种情形：原始 `E9` 备注有来源，但没有任何已审阅事实标识涵盖它。核对同一记录后，可以在知识页保留备注，注明对应可见来源页及真实工作表/坐标；不能制造 `fact:sheet-2::row-9-col-5`，也不能借用相邻记录的事实 ID。已有真实 `factRefs` 保持，只新增有依据的出处。该页完全没有权威事实时用 `factRefs: []`，但整库已有权威事实的覆盖要求不变。
 
 未解析引用不靠删除清单行或业务内容消错，也不靠反复提交同一错误标识。先区分“原有事实 ID 抄错”和“仅有原始单元格出处”，再由你根据真实来源修正文档。平台只核验标识与出处，不代替你判断业务内容。
+
+## 模板现状必须与关联页面一致
+
+合成来源的“工序记录”工作表只有“工序、要求、检验方式”表头和签字栏，未见填写记录；另有资料提交清单列出了这张表。先核对实际单元格，而不是只看事实数或候选数。可以说明“现有资料包含未填写的工序记录模板，尚无可核验的过程数据”，不能因为提交清单出现表名，就在关联的机构页写“已提交详细过程数据”。
+
+写后沿交叉链接反查实体介绍、主题正文与索引摘要是否对同一来源给出矛盾现状。业务状态保持可见，精确来源放脚注；有其他授权来源证明已填写时并列区分来源，不机械覆盖旧结论。是否创建页面或如何调整关系仍由你判断，平台不按词语替你裁决。
 
 ## 文本条款不等于字段清单
 
