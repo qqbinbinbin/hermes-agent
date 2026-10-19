@@ -12,7 +12,11 @@ COPY gateway/platforms/api_server.py /opt/hermes/gateway/platforms/api_server.py
 COPY gateway/platforms/api_run_store.py /opt/hermes/gateway/platforms/api_run_store.py
 COPY gateway/platforms/native_yield.py /opt/hermes/gateway/platforms/native_yield.py
 COPY skills/research/llm-wiki-fuxi/SKILL.md /opt/hermes/skills/research/llm-wiki-fuxi/SKILL.md
+COPY skills/research/llm-wiki-fuxi/references/bounded-writing.md /opt/hermes/skills/research/llm-wiki-fuxi/references/bounded-writing.md
+COPY skills/research/llm-wiki-fuxi/references/chinese-examples.md /opt/hermes/skills/research/llm-wiki-fuxi/references/chinese-examples.md
 COPY skills/research/llm-wiki-fuxi/references/continuation.md /opt/hermes/skills/research/llm-wiki-fuxi/references/continuation.md
+COPY skills/research/llm-wiki-fuxi/references/field-fidelity.md /opt/hermes/skills/research/llm-wiki-fuxi/references/field-fidelity.md
+COPY skills/research/llm-wiki-fuxi/references/link-correction.md /opt/hermes/skills/research/llm-wiki-fuxi/references/link-correction.md
 COPY docker/source-delta-verify.py /opt/hermes/docker/source-delta-verify.py
 COPY .fuxi-source-delta.sha256 /opt/hermes/.fuxi-source-delta.sha256
 RUN python3 /opt/hermes/docker/source-delta-verify.py "$FUXI_SOURCE_PARENT_ID" "$FUXI_SOURCE_REVISION"

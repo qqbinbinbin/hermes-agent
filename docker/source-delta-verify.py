@@ -16,7 +16,11 @@ MEMBERS = (
     "gateway/platforms/api_run_store.py",
     "gateway/platforms/native_yield.py",
     "skills/research/llm-wiki-fuxi/SKILL.md",
+    "skills/research/llm-wiki-fuxi/references/bounded-writing.md",
+    "skills/research/llm-wiki-fuxi/references/chinese-examples.md",
     "skills/research/llm-wiki-fuxi/references/continuation.md",
+    "skills/research/llm-wiki-fuxi/references/field-fidelity.md",
+    "skills/research/llm-wiki-fuxi/references/link-correction.md",
     "docker/source-delta-verify.py",
 )
 

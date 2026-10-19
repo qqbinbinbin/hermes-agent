@@ -139,6 +139,26 @@ class SourceDeltaTests(unittest.TestCase):
         with self.assertRaises(FileExistsError):
             DELTA.prepare_source(self.root, revision, destination)
 
+    def test_preparation_exports_the_complete_maintained_skill_with_exact_bytes(self):
+        skill = REPO / "skills/research/llm-wiki-fuxi"
+        resources = {path.relative_to(REPO).as_posix(): path.read_bytes()
+                     for path in skill.rglob("*.md")}
+        self.assertTrue(resources)
+        for name, content in resources.items():
+            target = self.root / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+        revision = self.committed_fixture()
+        destination = self.root / "complete-skill"
+        DELTA.prepare_source(self.root, revision, destination)
+        exported = {path.relative_to(destination).as_posix(): path.read_bytes()
+                    for path in (destination / "skills").rglob("*.md")}
+        self.assertEqual(exported, resources)
+        DELTA.verify_source(destination, PARENT, revision)
+        (destination / "skills/research/llm-wiki-fuxi/references/field-fidelity.md").unlink()
+        with self.assertRaisesRegex(ValueError, "member_path_invalid"):
+            DELTA.verify_source(destination, PARENT, revision)
+
     def test_preparation_sets_nonroot_readable_modes_under_private_umask(self):
         revision = self.committed_fixture()
         destination = self.root / "private-prepared"
