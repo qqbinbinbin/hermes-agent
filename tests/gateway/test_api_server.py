@@ -1137,6 +1137,25 @@ class TestCapabilitiesEndpoint:
 
 class TestSkillsEndpoint:
     @pytest.mark.asyncio
+    async def test_skills_uses_real_profile_catalog(self, adapter):
+        from hermes_constants import get_hermes_home
+
+        skill = get_hermes_home() / "skills/testing/catalog-probe/SKILL.md"
+        skill.parent.mkdir(parents=True)
+        skill.write_text(
+            "---\nname: catalog-probe\ndescription: Synthetic discovery probe\n---\n\n# Probe\n",
+            encoding="utf-8",
+        )
+        async with TestClient(TestServer(_create_app(adapter))) as cli:
+            response = await cli.get("/v1/skills")
+            assert response.status == 200
+            payload = await response.json()
+            assert payload["object"] == "list"
+            matches = [item for item in payload["data"] if item["name"] == "catalog-probe"]
+            assert len(matches) == 1
+            assert matches[0]["description"] == "Synthetic discovery probe"
+
+    @pytest.mark.asyncio
     async def test_skills_returns_list_envelope(self, adapter):
         fake_skills = [
             {"name": "github", "description": "GitHub workflow skill", "category": "github"},
