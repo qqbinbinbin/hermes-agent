@@ -18,6 +18,30 @@ REVISION = "b" * 40
 
 
 class SourceDeltaTests(unittest.TestCase):
+    def test_physical_trace_modules_export_exact_bytes_and_cannot_be_omitted(self):
+        required = (
+            "agent/provider_request.py", "agent/relay_llm.py",
+            "agent/relay_runtime.py", "gateway/platforms/api_server_runs.py",
+        )
+        for name in required:
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("# committed trace dependency: " + name + "\n")
+        revision = self.committed_fixture()
+        destination = self.root / "trace-prepared"
+        DELTA.prepare_source(self.root, revision, destination)
+        for name in required:
+            with self.subTest(name=name):
+                member = destination / name
+                self.assertTrue(member.is_file(), name)
+                original = member.read_bytes()
+                self.assertEqual(original, (self.root / name).read_bytes())
+                member.unlink()
+                with self.assertRaisesRegex(ValueError, "member_path_invalid"):
+                    DELTA.verify_source(destination, PARENT, revision)
+                member.write_bytes(original)
+        DELTA.verify_source(destination, PARENT, revision)
+
     def test_durable_yield_store_and_checkpoint_are_required_runtime_members(self):
         for name in ("gateway/platforms/api_run_store.py", "gateway/platforms/native_yield.py"):
             with self.subTest(name=name):
