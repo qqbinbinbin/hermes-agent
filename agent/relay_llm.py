@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from agent import relay_runtime
+from agent.provider_request import prepare_provider_request
 
 logger = logging.getLogger(__name__)
 
@@ -184,6 +185,10 @@ def execute(
 ) -> Any:
     """Run one non-streaming physical provider attempt through Relay.
     ``session_id`` defaults to the inherited Hermes turn's session (unmanaged when there is none)."""
+    provider_callback = callback
+    def callback(final_request):
+        return provider_callback(prepare_provider_request(
+            final_request, metadata, provider=name, model=model_name))
     attempt = _ManagedAttempt.resolve(session_id, request, metadata, name=name, model_name=model_name)
     if attempt is None:
         return callback(request)
@@ -201,6 +206,10 @@ async def execute_async(
     session_id: str | None = None, metadata: dict[str, Any] | None = None, defer_logical_completion: bool = False,
 ) -> Any:
     """Async ``execute``."""
+    provider_callback = callback
+    async def callback(final_request):
+        return await provider_callback(prepare_provider_request(
+            final_request, metadata, provider=name, model=model_name))
     attempt = _ManagedAttempt.resolve(session_id, request, metadata, name=name, model_name=model_name)
     if attempt is None:
         return await callback(request)
@@ -243,7 +252,8 @@ def stream_current(
     # Inside a managed callback (on the Relay session's loop) a nested ManagedLlmStream would be
     # iterated synchronously on that loop, which asyncio forbids; the outer stream tracks this attempt.
     if session_id is None or _has_running_event_loop():
-        return stream_factory(request)
+        return stream_factory(prepare_provider_request(
+            request, metadata, provider=name, model=model_name))
     managed = stream(
         request, stream_factory, session_id=session_id, name=name, model_name=model_name,
         finalizer=finalizer, metadata=metadata, defer_logical_completion=defer_logical_completion,
@@ -322,7 +332,10 @@ class ManagedLlmStream(Iterator[Any]):
         auxiliary = str((metadata or {}).get("call_role") or "").startswith("auxiliary:")
         self._logical_model_name, self._logical_provider_name = (model_name, name) if auxiliary else (None, None)
         self._on_chunk, self._chunk_adapter, self._accept_chunk = on_chunk, chunk_adapter or _namespace, accept_chunk
-        self._stream_factory, self._on_stream_created, self._finalizer = stream_factory, on_stream_created, finalizer
+        def provider_stream(final_request):
+            return stream_factory(prepare_provider_request(
+                final_request, metadata, provider=name, model=model_name))
+        self._stream_factory, self._on_stream_created, self._finalizer = provider_stream, on_stream_created, finalizer
         self._completed_response_predicate = completed_response_predicate
         self._raw_chunks: list[tuple[Any, Any]] = []
         self._prefetched_chunks: list[Any] = []

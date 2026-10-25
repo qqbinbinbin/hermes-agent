@@ -1,6 +1,7 @@
 """Durable ``/v1/runs`` admission, status, events, and control handlers."""
 
 import asyncio
+import copy
 import hashlib
 import json
 import logging
@@ -509,6 +510,7 @@ class _RunLaunch:
     deadline_at: Optional[float] = None
     iteration_action: str = 'summary'
     root_session_id: str = ''
+    relay_metadata: Optional[dict[str, object]] = None
 
     @property
     def approval_session_key(self) -> str:
@@ -733,6 +735,7 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
         browser_control_principal=_api_server._api_request_browser_control_principal.get(),
         browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get(),
         turn_author=turn_author, deadline_at=options['deadline_at'],
+        relay_metadata=copy.deepcopy(_api_server._request_relay_metadata(body)),
         iteration_action=options['iteration_action'], root_session_id=options['root_session_id'])
     self._activate_admitted_request()
     # A canonical Bot Chat that a Desktop holds live is that Desktop's to run: executing here would
@@ -835,6 +838,8 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
             _api_server._publish_turn_process_ownership(agent, effective_task_id)
             # Passed only when set: a human turn keeps today's call shape.
             author_kwargs = {"turn_author": run.turn_author} if run.turn_author is not None else {}
+            if run.relay_metadata:
+                author_kwargs["relay_metadata"] = copy.deepcopy(run.relay_metadata)
             r = agent.run_conversation(
                 user_message=run.user_message, conversation_history=run.conversation_history,
                 task_id=effective_task_id, **author_kwargs)

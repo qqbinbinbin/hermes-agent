@@ -6,6 +6,7 @@ import atexit
 import asyncio
 import contextlib
 import contextvars
+import copy
 import functools
 import importlib
 import inspect
@@ -916,6 +917,7 @@ class RelayTurnContext:
     lease: ConversationLease
     turn_id: str
     task_id: str
+    metadata: dict[str, object] = field(default_factory=dict, repr=False)
     handle: Any = None
     logical_llm_calls: dict[str, Any] = field(default_factory=dict, repr=False)
     logical_llm_lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
@@ -1053,7 +1055,8 @@ class RelaySessionCoordinator:
     ) -> RelayTurnContext:
         if lease.released:
             raise RuntimeError("Hermes Relay conversation lease is released")
-        turn = RelayTurnContext(lease=lease, turn_id=turn_id, task_id=task_id)
+        turn = RelayTurnContext(lease=lease, turn_id=turn_id, task_id=task_id,
+                                metadata=copy.deepcopy(metadata or {}))
         key = (lease.profile_key, lease.session_id)
         with self._active_turns_lock:
             if self._active_turns.get(key):
